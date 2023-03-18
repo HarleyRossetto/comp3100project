@@ -2,60 +2,44 @@ import java.io.*;
 import java.net.*;
 import java.lang.reflect.*;
 import java.util.*;
+import java.util.function.IntBinaryOperator;
 import java.lang.annotation.*;
 
+enum SysLogLevel {
+	None(0),
+	Info(5),
+	Full(10);
+
+	private int level;
+
+	private SysLogLevel(int lvl) {
+		this.level = lvl;
+	}
+
+	public int logLevel() {
+		return level;
+	}
+
+	public boolean isLowerOrEqualTo(SysLogLevel other) {
+		return this.level <= other.level;
+	}
+}
+
 public class MyClient {
-	public static final String ANSI_RESET = "\u001B[0m";
-	public static final String ANSI_BLACK = "\u001B[30m";
-	public static final String ANSI_RED = "\u001B[31m";
-	public static final String ANSI_GREEN = "\u001B[32m";
-	public static final String ANSI_YELLOW = "\u001B[33m";
-	public static final String ANSI_BLUE = "\u001B[34m";
-	public static final String ANSI_PURPLE = "\u001B[35m";
-	public static final String ANSI_CYAN = "\u001B[36m";
-	public static final String ANSI_WHITE = "\u001B[37m";
+	public static final String ANSI_RESET 	= "\u001B[0m";
+	public static final String ANSI_BLACK 	= "\u001B[30m";
+	public static final String ANSI_RED 	= "\u001B[31m";
+	public static final String ANSI_GREEN 	= "\u001B[32m";
+	public static final String ANSI_YELLOW 	= "\u001B[33m";
+	public static final String ANSI_BLUE 	= "\u001B[34m";
+	public static final String ANSI_PURPLE 	= "\u001B[35m";
+	public static final String ANSI_CYAN 	= "\u001B[36m";
+	public static final String ANSI_WHITE 	= "\u001B[37m";
+
+	private SysLogLevel sysMessageLogLevel = SysLogLevel.None;
 
 	public static void main(String args[]) {
 		new MyClient();
-		/*
-		 * try {
-		 * Socket s = new Socket("localhost", 50000);
-		 * BufferedReader inputStream = new BufferedReader(new
-		 * InputStreamReader(s.getInputStream()));
-		 * DataOutputStream outputStream = new DataOutputStream(s.getOutputStream());
-		 * 
-		 * outputStream.write(("HELO\n").getBytes());
-		 * outputStream.flush();
-		 * System.out.println("Client: HELO");
-		 * 
-		 * System.out.println("Server Says: " + inputStream.readLine());
-		 * 
-		 * outputStream.write(("AUTH " + System.getProperty("user.name") +
-		 * "\n").getBytes());
-		 * outputStream.flush();
-		 * System.out.println("Client: " + "AUTH " + System.getProperty("user.name") );
-		 * 
-		 * System.out.println("Server Says: " + inputStream.readLine());
-		 * 
-		 * outputStream.write(("REDY\n").getBytes());
-		 * outputStream.flush();
-		 * 
-		 * System.out.println("Server Says: " + inputStream.readLine());
-		 * 
-		 * outputStream.write(("QUIT\n").getBytes());
-		 * outputStream.flush();
-		 * System.out.println("Client: QUIT");
-		 * 
-		 * System.out.println("Server Says: " + inputStream.readLine());
-		 * 
-		 * outputStream.close();
-		 * inputStream.close();
-		 * s.close();
-		 * 
-		 * } catch (Exception ex) {
-		 * System.out.println(ex.toString());
-		 * }
-		 */
 	}
 
 	private Map<String, Method> commandMap = new HashMap<String, Method>();
@@ -101,8 +85,9 @@ public class MyClient {
 		}
 	}
 
-	private void writeSysMsg(String msg) {
-		System.out.println(ANSI_YELLOW + "SYS: " + msg + ANSI_WHITE);
+	private void writeSysMsg(SysLogLevel level, String msg) {
+		if (level.isLowerOrEqualTo(sysMessageLogLevel))
+			System.out.println(ANSI_YELLOW + "SYS: " + msg + ANSI_WHITE);
 	}
 
 	private void runClient() {
@@ -119,26 +104,32 @@ public class MyClient {
 		}
 	}
 
+	private ServerState[] _servers = null;
 	private boolean largestServerFound = false;
 	private ServerState largestServer = null;
 	private int numLargestServers = 0;
 	private boolean jobReceived = false;
 	private Job recentJob = null;
+	private boolean jobCompleted = false;
+
+	private int bigServerIndex = 0;
 
 	private void LRR() {
 		C_Ready();
-		findAndExecuteCommand(read()); // JOBN, JCPL, NONE
+
+		findAndExecuteCommand(read()); //Typically JOBN, JCPL, NONE
+
 		if (!largestServerFound) {
 			C_GetServerState(GETS_State.All, null, null);
 			findAndExecuteCommand(read()); // Hopefully DATA
-			var servers = (ServerState[]) server_data;
+			_servers = (ServerState[]) server_data;
 			int cpuMax = 0;
-			for (int i = servers.length - 1; i > 0; i--) {
-				if (servers[i].core > cpuMax) {
-					cpuMax = servers[i].core;
-					largestServer = servers[i];
+			for (int i = _servers.length - 1; i > 0; i--) {
+				if (_servers[i].core > cpuMax) {
+					cpuMax = _servers[i].core;
+					largestServer = _servers[i];
 					numLargestServers = 1;
-				} else if (servers[i].core == cpuMax) {
+				} else if (_servers[i].core == cpuMax) {
 					numLargestServers++;
 				} else {
 					continue;
@@ -148,20 +139,22 @@ public class MyClient {
 			findAndExecuteCommand(read()); // Receive .
 		}
 		
-		if (jobReceived) {
+		if (jobReceived && recentJob != null) {
 			jobReceived = false;
-			C_Schedule(recentJob.jobId, largestServer.type, 0);
+			C_Schedule(recentJob.jobId, largestServer.type, (bigServerIndex++ % numLargestServers));
 			
 			findAndExecuteCommand(read()); // Hopefully OK
 			
 			recentJob = null;
+		} else if (jobCompleted) {
+			jobCompleted = false;
 		} else {
 			findAndExecuteCommand(read()); // Receive .
 		}
 		
 	}
 
-		private void write(StringBuilder sb) {
+	private void write(StringBuilder sb) {
 		write(sb.toString());
 	}
 
@@ -175,6 +168,15 @@ public class MyClient {
 		}
 	}
 
+	private void write(Object... args) {
+		StringBuilder sb = new StringBuilder(32);
+		for (Object object : args) {
+			sb.append(object).append(' ');
+		}
+		System.out.println(sb.toString());
+		write(sb);
+	}
+
 	private String read() {
 		try {
 			var response = inputStream.readLine();
@@ -184,6 +186,14 @@ public class MyClient {
 			System.err.println(ex.getMessage());
 			return "";
 		}
+	}
+
+	private Integer readInt() {
+		var res = read();
+		if (res.length() > 0) {
+			return Integer.valueOf(res);
+		}
+		return null;
 	}
 
 	private <T> T read(Class<T> asType) {
@@ -231,7 +241,8 @@ public class MyClient {
 			}
 		}
 
-		writeSysMsg("Mapped " + count + " commands.");
+
+		writeSysMsg(SysLogLevel.Info, "Mapped " + count + " commands.");
 	}
 
 	private void findAndExecuteCommand(String args) {
@@ -288,8 +299,8 @@ public class MyClient {
 		}
 
 		try {
-			writeSysMsg("Invoking: " + m.getName());
-			System.out.print(sb.toString());
+			writeSysMsg(SysLogLevel.Info, "Invoking: " + m.getName());
+			writeSysMsg(SysLogLevel.Full, sb.toString());
 			// Invoke the method with params
 			m.invoke(this, castParams.toArray());
 		} catch (Exception ex) {
@@ -350,30 +361,53 @@ public class MyClient {
 		write(sb);
 	}
 
+	/**
+	 * The SCHD command schedules a job (jobID) to the server (serverID) of serverType.
+	 * {@code SCHD 3 joon 1}
+	 */
 	@ClientCommand(cmd = "SCHD")	 
 	public void C_Schedule(int jobId, String serverType, int serverId) {
-		write(new StringBuilder("SCHD ")
-			.append(jobId).append(' ')
-			.append(serverType)
-			.append(' ')
-			.append(serverId));
+		write("SCHD", jobId, serverType, serverId);
 	}
 	
+	/**
+	 * The ENQJ command places the current job to a specified queue. The name used for the global queue is GQ.
+	 * {@code ENQJ GQ}
+	 * @param queueName Queue to add current job to.
+	 */
 	@ClientCommand(cmd = "ENQJ")	 
 	public void C_EnqueueJob(String queueName) {
-		write(new StringBuilder("ENQJ ").append(queueName));
+		write("ENQJ", queueName);
 	}
 
+	/**
+	 * The DEQJ command gets the job at the specified queue position (qID) from the specified queue.
+	 * {@code DEQJ GQ 2 // job at the third place (qID of 2 starting from 0) of the global queue}
+	 * @param queueName
+	 * @param queuePosition
+	 */
 	@ClientCommand(cmd = "DEQJ")	 
 	public void C_DequeueJob(String queueName, int queuePosition) {
-		write(new StringBuilder("DEQJ ").append(queueName));
+		write("DEQJ ", queueName);
 	}
 	
+	/**
+	 * The LSTQ command gets job information in the specified queue.
+	 * LSTQ queue name i|$|#|*
+	 * @param queueName Queue to get info for
+	 * @param type Index | Number | All | $ (Not used)
+	 * @param i Used when Index is specified.
+	 */
 	@ClientCommand(cmd = "LSTQ")	 
 	public void C_GetJobInfo(String queueName, ListType type, Integer i) {
 		var sb = new StringBuilder("LSTQ ").append(queueName).append(' ');
 
 		if (type == ListType.Index) {
+			if (i == null) {
+				System.err.println("Cannot get job info for queue: " + queueName + " with Index type when i is null");
+				return;
+			}
+
 			sb.append(i.intValue());
 		} else {
 			sb.append(type.getCommand());
@@ -403,34 +437,103 @@ public class MyClient {
 
 	}
 
+	/**
+	 * The CNTJ command queries the number of jobs of a specified state, on a specified server. 
+	 * The job state is specified by one of state codes, except 0 for ‘submitted’.
+	 * {@code
+	 * CNTJ joon 0 2 // query the number of running jobs on joon 0
+	 * 1 // the response from ds-server, i.e., 1 running job on joon 0
+	 * }
+	 * @param serverType
+	 * @param serverId
+	 * @param jobState
+	 */
 	@ClientCommand(cmd = "CNTJ")	 
-	public void C_JobCountForServer() {
+	public void C_JobCountForServer(String serverType, int serverId, int jobState) { // TODO Jobstate enum
+		write("CNTJ", serverType, serverId, jobState);
 
+		// read a number
+		var answer = readInt();
 	}
 	
+	/**
+	 * The EJWT command queries the sum of estimated waiting times on a given server. It does not take into
+	 * account the remaining runtime of running jobs. Note that the calculation should not be considered to be
+	 * accurate because (1) it is based on estimated runtimes of waiting jobs and (2) more importantly, it does not
+	 * consider the possibility of parallel execution of waiting jobs.
+	 * @param serverType
+	 * @param serverId
+	 */
 	@ClientCommand(cmd = "EJWT")	 
-	public void C_EstimatedJobWaitingTime() {
+	public void C_EstimatedJobWaitingTime(String serverType, int serverId) {
+		write("EJWT", serverType, serverId);
 
+		// read a number
+		var answer = readInt();
 	}
 	
+	/**
+	 * The LSTJ command queries the list of running and waiting jobs on a given server. The response to LSTJ
+	 * is formatted in jobID jobState submitTime startTime estRunTime core memory disk. The job state is sent as
+	 * a state code either 1 or 2 for waiting and running, respectively. The response will be a sequence of DATA, a
+	 * series of job information and OK message pairs and ‘.’.
+	 * @param serverType
+	 * @param serverId
+	 */
 	@ClientCommand(cmd = "LSTJ")	 
-	public void C_ListJobs() {
+	public void C_ListJobs(String serverType, int serverId) {
+		write("LSTJ", serverType, serverId);
 
+		// Now a data response..
+		//setDataRecordType(JobState.class);
 	}
 	
+	/**
+	 * The MIGJ command migrates a job specified by jobID on srcServerID of srcServerType to tgtServerID of
+	 * tgtServerType. The job can be of waiting, running or suspended. The successful migration results in the same
+	 * behaviour of normal scheduling action. In particular, the job’s state on the target server is determined by
+	 * the common criteria of job execution, such as the resource availability and running/waiting jobs of the target
+	 * server. The migrated job will “restart” on the target server.
+	 * @param jobId
+	 * @param srcServerType
+	 * @param srcServerId
+	 * @param targetServerType
+	 * @param targetServerId
+	 */
 	@ClientCommand(cmd = "MIGJ")	 
-	public void C_MigrateJob() {
+	public void C_MigrateJob(int jobId, String srcServerType, int srcServerId, String targetServerType,
+			int targetServerId) {
+		write("MIGJ", jobId, srcServerType, srcServerId, targetServerType, targetServerId);
 
+		//RX OK
 	}
 	
+	/**
+	 * The KILJ command kills a job. The killed job is pushed back to the queue with the killed time as a new
+	 * submission time. The job will be resubmitted with JOBP.
+	 * @param serverType
+	 * @param serverId
+	 * @param jobId
+	 */
 	@ClientCommand(cmd = "KILJ")	 
-	public void C_KillJob() {
-	
+	public void C_KillJob(String serverType, int serverId, int jobId) {
+		write("KILJ", serverType, serverId, jobId);
+
+		// RX OK
 	}
 
+	/**
+	 * The TERM command terminates a server. All waiting/running jobs are killed and re-submitted 
+	 * for scheduling with JOBP. The server is then put into the inactive state.
+	 * @param serverType
+	 * @param serverId
+	 */
 	@ClientCommand(cmd = "TERM")	 
-	public void C_TerminateServer() {
-		
+	public void C_TerminateServer(String serverType, int serverId) {
+		write("TERM", serverType, serverId);
+
+		//Read bynber if jobs killed
+		// var jobsKilled = readInt();
 	}
 	
 	@ClientCommand(cmd = "QUIT")	 
@@ -473,7 +576,13 @@ public class MyClient {
 
 	@ServerCommand(cmd = "JCPL")
 	public void S_RecentlyCompletedJobInfo(int endTime, int jobId, String serverType, int serverId) {
-		C_GetJobInfo("GQ", ListType.Number, null);
+		jobCompleted = true;
+
+		// for (var srv : _servers) {
+		// 	if (srv.type == serverType && srv.id == serverId) {
+		// 		srv.state = 
+		// 	}
+		// }
 	}
 
 	@ServerCommand(cmd = "RESF")
@@ -547,6 +656,18 @@ public class MyClient {
 	String cmd();
 }
 
+class JobState extends Applicance {
+	public int id;
+	public int state;
+	public int submitTime;
+	public int startTime;
+	public int estRunTime;
+
+	public EnumJobState getStateEnum() {
+		return EnumJobState.getJobState(state);
+	}
+}
+
 class Job extends Applicance {
 	public int jobId;
 	public int queueId;
@@ -561,7 +682,7 @@ class Job extends Applicance {
 
 class ServerState {
 	public String type;
-	public int limit;
+	public int id;
 	public String state;
 	public int curStartTime;
 	public int core;
@@ -642,4 +763,33 @@ enum ListType {
 	public String getCommand() {
 		return cmd;
 	} 
+}
+
+enum EnumJobState {
+	Submitted(0),
+	Waiting(1),
+	Running(2),
+	Suspended(3),
+	Completed(4),
+	PreEmpted(5),
+	Failed(6),
+	Killed(7),
+	INVALID(8);
+
+	private int state;
+
+	private EnumJobState(int s) {
+		this.state = s;
+	}
+
+	public int getState() {
+		return state;
+	}
+
+	public static EnumJobState getJobState(int s) {
+		if (s >= 0 && s <= 7)
+			return EnumJobState.values()[s];
+		else 
+			return EnumJobState.INVALID;
+	}
 }
