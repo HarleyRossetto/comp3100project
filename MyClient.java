@@ -117,11 +117,13 @@ public class MyClient {
 	private void LRR() {
 		C_Ready();
 
-		findAndExecuteCommand(read()); //Typically JOBN, JCPL, NONE
+		readAndExecuteCommand(); //Typically JOBN, JCPL, NONE
 
 		if (!largestServerFound) {
 			C_GetServerState(GETS_State.All, null, null);
-			findAndExecuteCommand(read()); // Hopefully DATA
+
+			readAndExecuteCommand(); // Hopefully DATA
+
 			_servers = (ServerState[]) server_data;
 			int cpuMax = 0;
 			for (int i = _servers.length - 1; i > 0; i--) {
@@ -136,25 +138,25 @@ public class MyClient {
 				}
 			}
 			largestServerFound = true;
-			findAndExecuteCommand(read()); // Receive .
+			readAndExecuteCommand(); // Receive .
 		}
 		
 		if (jobReceived && recentJob != null) {
 			jobReceived = false;
 			C_Schedule(recentJob.jobId, largestServer.type, (bigServerIndex++ % numLargestServers));
 			
-			findAndExecuteCommand(read()); // Hopefully OK
+			readAndExecuteCommand(); // Hopefully OK
 			
 			recentJob = null;
 		} else if (jobCompleted) {
 			jobCompleted = false;
 		} else {
-			findAndExecuteCommand(read()); // Receive .
+			readAndExecuteCommand();; // Receive .
 		}
 		
 	}
 
-	private void write(StringBuilder sb) {
+	private void write(StringBuilder sb) {    
 		write(sb.toString());
 	}
 
@@ -173,7 +175,6 @@ public class MyClient {
 		for (Object object : args) {
 			sb.append(object).append(' ');
 		}
-		System.out.println(sb.toString());
 		write(sb);
 	}
 
@@ -201,9 +202,16 @@ public class MyClient {
 		int responseIdx = 0;
 
 		try {
-			T instance = (T) asType.getConstructors()[0].newInstance();
+			// Instantiate a new intance of the desired type. Because Java has god-aweful generics
+			// we need to recast that instance as the desired type afterwards..
+			// All objects will require a default constructor with no parameters (must be manually
+			// specified in type), thus we will always use the first constructor for instantiation.
+			T instance =  asType.cast(asType.getConstructors()[0].newInstance());
 			
 			for (var member : instance.getClass().getFields()) {
+				// Break loop if there are no more params.
+				// In some cases there will be objects that can store more values should they be
+				// provided by the incoming data. If not we will break early and not set those fields.
 				if (responseIdx >= response.length)
 					break;
 
@@ -243,6 +251,10 @@ public class MyClient {
 
 
 		writeSysMsg(SysLogLevel.Info, "Mapped " + count + " commands.");
+	}
+
+	private void readAndExecuteCommand() {
+		findAndExecuteCommand(read());
 	}
 
 	private void findAndExecuteCommand(String args) {
@@ -506,6 +518,7 @@ public class MyClient {
 		write("MIGJ", jobId, srcServerType, srcServerId, targetServerType, targetServerId);
 
 		//RX OK
+		readAndExecuteCommand();
 	}
 	
 	/**
@@ -520,6 +533,7 @@ public class MyClient {
 		write("KILJ", serverType, serverId, jobId);
 
 		// RX OK
+		readAndExecuteCommand();
 	}
 
 	/**
@@ -533,7 +547,7 @@ public class MyClient {
 		write("TERM", serverType, serverId);
 
 		//Read bynber if jobs killed
-		// var jobsKilled = readInt();
+		var jobsKilled = readInt();
 	}
 	
 	@ClientCommand(cmd = "QUIT")	 
@@ -559,15 +573,14 @@ public class MyClient {
 	@ServerCommand(cmd = "JOBN")
 	public void S_JOBN(int submitTime, int jobId, int estRuntime, int core, int memory, int disk) {
 		// do some stuff
-		var job = new Job();
-		job.submitTime = submitTime;
-		job.jobId = jobId;
-		job.estRunTime = estRuntime;
-		job.cores = core;
-		job.memory = memory;
-		job.disk = disk;
+		recentJob = new Job();
+		recentJob.submitTime = submitTime;
+		recentJob.jobId = jobId;
+		recentJob.estRunTime = estRuntime;
+		recentJob.cores = core;
+		recentJob.memory = memory;
+		recentJob.disk = disk;
 
-		recentJob = job;
 		jobReceived = true;
 		// Debug!
 		//write("QUIT");
@@ -787,7 +800,7 @@ enum EnumJobState {
 	}
 
 	public static EnumJobState getJobState(int s) {
-		if (s >= 0 && s <= 7)
+		if (s >= Submitted.ordinal() && s <= Killed.ordinal())
 			return EnumJobState.values()[s];
 		else 
 			return EnumJobState.INVALID;
