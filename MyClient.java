@@ -2,28 +2,7 @@ import java.io.*;
 import java.net.*;
 import java.lang.reflect.*;
 import java.util.*;
-import java.util.function.IntBinaryOperator;
 import java.lang.annotation.*;
-
-enum SysLogLevel {
-	None(0),
-	Info(5),
-	Full(10);
-
-	private int level;
-
-	private SysLogLevel(int lvl) {
-		this.level = lvl;
-	}
-
-	public int logLevel() {
-		return level;
-	}
-
-	public boolean isLowerOrEqualTo(SysLogLevel other) {
-		return this.level <= other.level;
-	}
-}
 
 public class MyClient {
 	public static final String ANSI_RESET 	= "\u001B[0m";
@@ -151,7 +130,7 @@ public class MyClient {
 		} else if (jobCompleted) {
 			jobCompleted = false;
 		} else {
-			readAndExecuteCommand();; // Receive .
+			readAndExecuteCommand(); // Receive .
 		}
 		
 	}
@@ -347,6 +326,19 @@ public class MyClient {
 		write("REDY");
 	}
 
+	/**
+	 * The GETS command queries server state information at the current simulation time. The All option requests the information on all servers regardless of their state including inactive and unavailable. The Type
+	 * option requests the information on servers of a specified type (serverType) regardless of their state, too. The
+	 * Capable and Avail options make requests for server state information based on initial resource capacity and
+	 * the current resource availability, respectively. For instance, GETS Capable 3 500 1000 and GETS Avail 3 500
+	 * 1000 are different in that the response to the former is all servers that can “eventually” provide 3 cores, 500MB
+	 * of memory and 1000MB of disk regardless of their current availability. Meanwhile, the response to the latter
+	 * is all servers that can “immediately” provide 3 cores, 500MB of memory and 1000MB of disk. With the Avail
+	 * option, if there are insufficient available resources and/or waiting jobs, the server is not available for the job.
+	 * In general, it is recommended to use the Capable option than the Avail option as the system is often busy,
+	 * i.e., all servers are running one or more jobs at any given point in time. In the case of no servers are available
+	 * (Avail), the message right after the DATA message will be ‘.’
+	 */
 	@ClientCommand(cmd = "GETS")	 
 	public void C_GetServerState(GETS_State state, String type, Applicance sys) {
 		var sb = new StringBuilder("GETS ").append(state.getLabel());
@@ -802,7 +794,27 @@ enum EnumJobState {
 	public static EnumJobState getJobState(int s) {
 		if (s >= Submitted.ordinal() && s <= Killed.ordinal())
 			return EnumJobState.values()[s];
-		else 
+		else
 			return EnumJobState.INVALID;
+	}
+}
+
+enum SysLogLevel {
+	None(0),
+	Info(5),
+	Full(10);
+
+	private int level;
+
+	private SysLogLevel(int lvl) {
+		this.level = lvl;
+	}
+
+	public int logLevel() {
+		return level;
+	}
+
+	public boolean isLowerOrEqualTo(SysLogLevel other) {
+		return this.level <= other.level;
 	}
 }
