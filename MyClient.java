@@ -5,6 +5,10 @@ import java.util.*;
 import java.lang.annotation.*;
 
 public class MyClient {
+	public static void main(String args[]) {
+		new MyClient();
+	}
+
 	public static final String ANSI_RESET 	= "\u001B[0m";
 	public static final String ANSI_BLACK 	= "\u001B[30m";
 	public static final String ANSI_RED 	= "\u001B[31m";
@@ -17,13 +21,11 @@ public class MyClient {
 
 	private SysLogLevel sysMessageLogLevel = SysLogLevel.None;
 
-	public static void main(String args[]) {
-		new MyClient();
-	}
+	private Map<String, MethodCallData> commandMap = new HashMap<String, MethodCallData>();
 
-	private Map<String, Method> commandMap = new HashMap<String, Method>();
 	private boolean runClient = false;
 
+	// IO Objects
 	private Socket socket;
 	private BufferedReader inputStream;
 	private DataOutputStream outputStream;
@@ -31,6 +33,18 @@ public class MyClient {
 	private Class<?> dataRecordType = null;
 
 	private Object[] server_data = null;
+
+	private ServerState[] _servers = null;
+
+	private boolean largestServerFound = false;
+	private ServerState largestServer = null;
+	private int numLargestServers = 0;
+
+	private boolean jobReceived = false;
+	private Job recentJob = null;
+	private boolean jobCompleted = false;
+
+	private int bigServerIndex = 0;
 
 	public MyClient() {
 		mapCommands();
@@ -42,8 +56,15 @@ public class MyClient {
 			runClient = false;
 		}
 
-		runClient();
-
+		if (runClient) {
+			C_AuthHandshake();
+		
+			// Initial ready message
+			while (runClient) {
+				LRR();
+			}
+		}
+			
 		closeSocket();
 	}
 
@@ -60,7 +81,7 @@ public class MyClient {
 			inputStream.close();
 			socket.close();
 		} catch (IOException ioex) {
-			System.err.println(ioex.getMessage());		
+			System.err.println(ioex.getMessage());
 		}
 	}
 
@@ -69,73 +90,57 @@ public class MyClient {
 			System.out.println(ANSI_YELLOW + "SYS: " + msg + ANSI_WHITE);
 	}
 
-	private void runClient() {
-		if (runClient) {
-			write("HELO");
-			read();
-			write("AUTH " + System.getProperty("user.name"));
-			read();
-		}
-
-		while (runClient) {
-			LRR();
-			//findAndExecuteCommand(read());
-		}
-	}
-
-	private ServerState[] _servers = null;
-	private boolean largestServerFound = false;
-	private ServerState largestServer = null;
-	private int numLargestServers = 0;
-	private boolean jobReceived = false;
-	private Job recentJob = null;
-	private boolean jobCompleted = false;
-
-	private int bigServerIndex = 0;
-
 	private void LRR() {
 		C_Ready();
 
-		readAndExecuteCommand(); //Typically JOBN, JCPL, NONE
+		readAndExecuteCommand(); // Typically JOBN, JCPL, NONE
 
 		if (!largestServerFound) {
-			C_GetServerState(GETS_State.All, null, null);
-
-			readAndExecuteCommand(); // Hopefully DATA
-
-			_servers = (ServerState[]) server_data;
-			int cpuMax = 0;
-			for (int i = _servers.length - 1; i > 0; i--) {
-				if (_servers[i].core > cpuMax) {
-					cpuMax = _servers[i].core;
-					largestServer = _servers[i];
-					numLargestServers = 1;
-				} else if (_servers[i].core == cpuMax) {
-					numLargestServers++;
-				} else {
-					continue;
-				}
-			}
-			largestServerFound = true;
-			readAndExecuteCommand(); // Receive .
+			findLargestServer();
 		}
-		
+
 		if (jobReceived && recentJob != null) {
 			jobReceived = false;
-			C_Schedule(recentJob.jobId, largestServer.type, (bigServerIndex++ % numLargestServers));
-			
+			C_Schedule(recentJob.jobId, largestServer.type, bigServerIndex++ % numLargestServers);
+
 			readAndExecuteCommand(); // Hopefully OK
-			
+
 			recentJob = null;
 		} else if (jobCompleted) {
 			jobCompleted = false;
 		} else {
 			readAndExecuteCommand(); // Receive .
 		}
-		
+
 	}
 
-	private void write(StringBuilder sb) {    
+	private void findLargestServer() {
+		C_GetServerState(GETS_State.All, null, null);
+
+		readAndExecuteCommand(); // Hopefully DATA
+
+		_servers = (ServerState[]) server_data;
+		int cpuMax = Integer.MIN_VALUE;
+
+		largestServer = _servers[0];
+		numLargestServers = 1;
+
+		for (int i = 0; i < _servers.length; i++) {
+			if (_servers[i].core > cpuMax && !largestServer.type.equals(_servers[i].type)) {
+				cpuMax = _servers[i].core;
+				largestServer = _servers[i];
+				numLargestServers = 1;
+			} else if (largestServer.type.equals(_servers[i].type)) {
+				numLargestServers++;
+			} else {
+				continue;
+			}
+		}
+		largestServerFound = true;
+		readAndExecuteCommand(); // Receive .
+	}
+
+	private void write(StringBuilder sb) {
 		write(sb.toString());
 	}
 
@@ -143,7 +148,7 @@ public class MyClient {
 		try {
 			outputStream.write((message + "\n").getBytes());
 			outputStream.flush();
-			System.out.println(ANSI_GREEN + "TXD: " + message + ANSI_WHITE);
+			writeSysMsg(SysLogLevel.Info, ANSI_GREEN + "TXD: " + message + ANSI_WHITE);
 		} catch (Exception ex) {
 			System.err.println(ex.getMessage());
 		}
@@ -154,13 +159,16 @@ public class MyClient {
 		for (Object object : args) {
 			sb.append(object).append(' ');
 		}
+		if (args.length > 1) {
+			sb.deleteCharAt(sb.length() - 1);
+		}
 		write(sb);
 	}
 
 	private String read() {
 		try {
 			var response = inputStream.readLine();
-			System.out.println("RXD: " + response);
+			writeSysMsg(SysLogLevel.Info, "RXD: " + response);
 			return response;
 		} catch (Exception ex) {
 			System.err.println(ex.getMessage());
@@ -185,8 +193,8 @@ public class MyClient {
 			// we need to recast that instance as the desired type afterwards..
 			// All objects will require a default constructor with no parameters (must be manually
 			// specified in type), thus we will always use the first constructor for instantiation.
-			T instance =  asType.cast(asType.getConstructors()[0].newInstance());
-			
+			T instance = asType.cast(asType.getConstructors()[0].newInstance());
+
 			for (var member : instance.getClass().getFields()) {
 				// Break loop if there are no more params.
 				// In some cases there will be objects that can store more values should they be
@@ -201,7 +209,7 @@ public class MyClient {
 		} catch (Exception ex) {
 			System.err.println(ex.getMessage());
 		}
-		
+
 		return null;
 	}
 
@@ -217,17 +225,14 @@ public class MyClient {
 		int count = 0;
 
 		for (Method m : this.getClass().getDeclaredMethods()) {
-
-			// System.out.println("Method " + m.getName() + " has " + m.getAnnotations().length + " annotations");
-
 			var cmdat = m.getAnnotation(commandAnnotationClass);
 
 			if (cmdat != null) {
-				commandMap.put(cmdat.cmd(), m);
+				commandMap.put(cmdat.cmd(), new MethodCallData(m, m.getParameters()));
+				writeSysMsg(SysLogLevel.Full, "Mapped command " + cmdat.cmd());
 				count++;
 			}
 		}
-
 
 		writeSysMsg(SysLogLevel.Info, "Mapped " + count + " commands.");
 	}
@@ -263,20 +268,20 @@ public class MyClient {
 	 * cast all args to param types
 	 * invoke method with typecase args
 	 */
-	private void executeCommand(Method m, String[] args) {
-		var params = m.getParameters();
+	private void executeCommand(MethodCallData m, String[] args) {
 		// If we didnt receive enough params, return and print error.
-		if (args.length != params.length) {
+		if (args.length != m.parameters.length) {
 			System.err.println(
-					"Cannot invoke " + m.getName() + ", expected " + params.length + " parameters, got " + args.length);
+					"Cannot invoke " + m.method.getName() + ", expected " + m.parameters.length + " parameters, got "
+							+ args.length);
 			return;
 		}
 
-		List<Object> castParams = new ArrayList<Object>(params.length);
+		List<Object> castParams = new ArrayList<Object>(m.parameters.length);
 		int argIdx = 0;
 		var sb = new StringBuilder();
 
-		for (Parameter p : params) {
+		for (Parameter p : m.parameters) {
 			var pType = p.getType();
 
 			var castType = castArgument(pType, args[argIdx++]);
@@ -290,12 +295,12 @@ public class MyClient {
 		}
 
 		try {
-			writeSysMsg(SysLogLevel.Info, "Invoking: " + m.getName());
+			writeSysMsg(SysLogLevel.Info, "Invoking: " + m.method.getName());
 			writeSysMsg(SysLogLevel.Full, sb.toString());
 			// Invoke the method with params
-			m.invoke(this, castParams.toArray());
+			m.method.invoke(this, castParams.toArray());
 		} catch (Exception ex) {
-			System.err.println("Fail to invoke " + m.getName() + "\n" + ex.getMessage());
+			System.err.println("Fail to invoke " + m.method.getName() + "\n" + ex.getMessage());
 		}
 	}
 
@@ -303,7 +308,7 @@ public class MyClient {
 		// String
 		if (type.equals(String.class)) {
 			return arg;
-		} 
+		}
 		// Integers
 		else if (type.equals(int.class)) {
 			return Integer.parseInt(arg);
@@ -315,11 +320,21 @@ public class MyClient {
 		return null;
 	}
 
-
 	/**
 	 * 
-	 * 	Client Commands
+	 * Client Commands
 	 * 
+	 */
+	public void C_AuthHandshake() {
+		// Auth handshake
+		write("HELO");
+		readAndExecuteCommand(); // OK
+		write("AUTH " + System.getProperty("user.name"));
+		readAndExecuteCommand(); // OK
+	}
+
+	/*
+	 * The REDY command signals ds-server for a next simulation event.
 	 */
 	@ClientCommand(cmd = "REDY")
 	public void C_Ready() {
@@ -327,19 +342,30 @@ public class MyClient {
 	}
 
 	/**
-	 * The GETS command queries server state information at the current simulation time. The All option requests the information on all servers regardless of their state including inactive and unavailable. The Type
-	 * option requests the information on servers of a specified type (serverType) regardless of their state, too. The
-	 * Capable and Avail options make requests for server state information based on initial resource capacity and
-	 * the current resource availability, respectively. For instance, GETS Capable 3 500 1000 and GETS Avail 3 500
-	 * 1000 are different in that the response to the former is all servers that can “eventually” provide 3 cores, 500MB
-	 * of memory and 1000MB of disk regardless of their current availability. Meanwhile, the response to the latter
-	 * is all servers that can “immediately” provide 3 cores, 500MB of memory and 1000MB of disk. With the Avail
-	 * option, if there are insufficient available resources and/or waiting jobs, the server is not available for the job.
-	 * In general, it is recommended to use the Capable option than the Avail option as the system is often busy,
-	 * i.e., all servers are running one or more jobs at any given point in time. In the case of no servers are available
+	 * The GETS command queries server state information at the current simulation
+	 * time. The All option requests the information on all servers regardless of
+	 * their state including inactive and unavailable. The Type
+	 * option requests the information on servers of a specified type (serverType)
+	 * regardless of their state, too. The
+	 * Capable and Avail options make requests for server state information based on
+	 * initial resource capacity and
+	 * the current resource availability, respectively. For instance, GETS Capable 3
+	 * 500 1000 and GETS Avail 3 500
+	 * 1000 are different in that the response to the former is all servers that can
+	 * “eventually” provide 3 cores, 500MB
+	 * of memory and 1000MB of disk regardless of their current availability.
+	 * Meanwhile, the response to the latter
+	 * is all servers that can “immediately” provide 3 cores, 500MB of memory and
+	 * 1000MB of disk. With the Avail
+	 * option, if there are insufficient available resources and/or waiting jobs,
+	 * the server is not available for the job.
+	 * In general, it is recommended to use the Capable option than the Avail option
+	 * as the system is often busy,
+	 * i.e., all servers are running one or more jobs at any given point in time. In
+	 * the case of no servers are available
 	 * (Avail), the message right after the DATA message will be ‘.’
 	 */
-	@ClientCommand(cmd = "GETS")	 
+	@ClientCommand(cmd = "GETS")
 	public void C_GetServerState(GETS_State state, String type, Applicance sys) {
 		var sb = new StringBuilder("GETS ").append(state.getLabel());
 		switch (state) {
@@ -366,43 +392,49 @@ public class MyClient {
 	}
 
 	/**
-	 * The SCHD command schedules a job (jobID) to the server (serverID) of serverType.
+	 * The SCHD command schedules a job (jobID) to the server (serverID) of
+	 * serverType.
 	 * {@code SCHD 3 joon 1}
 	 */
-	@ClientCommand(cmd = "SCHD")	 
+	@ClientCommand(cmd = "SCHD")
 	public void C_Schedule(int jobId, String serverType, int serverId) {
 		write("SCHD", jobId, serverType, serverId);
 	}
-	
+
 	/**
-	 * The ENQJ command places the current job to a specified queue. The name used for the global queue is GQ.
+	 * The ENQJ command places the current job to a specified queue. The name used
+	 * for the global queue is GQ.
 	 * {@code ENQJ GQ}
+	 * 
 	 * @param queueName Queue to add current job to.
 	 */
-	@ClientCommand(cmd = "ENQJ")	 
+	@ClientCommand(cmd = "ENQJ")
 	public void C_EnqueueJob(String queueName) {
 		write("ENQJ", queueName);
 	}
 
 	/**
-	 * The DEQJ command gets the job at the specified queue position (qID) from the specified queue.
+	 * The DEQJ command gets the job at the specified queue position (qID) from the
+	 * specified queue.
 	 * {@code DEQJ GQ 2 // job at the third place (qID of 2 starting from 0) of the global queue}
+	 * 
 	 * @param queueName
 	 * @param queuePosition
 	 */
-	@ClientCommand(cmd = "DEQJ")	 
+	@ClientCommand(cmd = "DEQJ")
 	public void C_DequeueJob(String queueName, int queuePosition) {
 		write("DEQJ ", queueName);
 	}
-	
+
 	/**
 	 * The LSTQ command gets job information in the specified queue.
 	 * LSTQ queue name i|$|#|*
+	 * 
 	 * @param queueName Queue to get info for
-	 * @param type Index | Number | All | $ (Not used)
-	 * @param i Used when Index is specified.
+	 * @param type      Index | Number | All | $ (Not used)
+	 * @param i         Used when Index is specified.
 	 */
-	@ClientCommand(cmd = "LSTQ")	 
+	@ClientCommand(cmd = "LSTQ")
 	public void C_GetJobInfo(String queueName, ListType type, Integer i) {
 		var sb = new StringBuilder("LSTQ ").append(queueName).append(' ');
 
@@ -416,21 +448,22 @@ public class MyClient {
 		} else {
 			sb.append(type.getCommand());
 		}
-		
+
 		write(sb);
 
-		// Handle responses because of course they have no header and have different formats...
+		// Handle responses because of course they have no header and have different
+		// formats...
 		switch (type) {
 			case Index:
 				Job response = read(Job.class);
 				break;
 			case Number:
 				var numberOfJobsInQueue = Integer.valueOf(read());
-				
+
 				if (numberOfJobsInQueue.intValue() == 0) {
 					C_Quit();
 				}
-				
+
 				break;
 			case All:
 				setDataRecordType(Job.class);
@@ -442,85 +475,102 @@ public class MyClient {
 	}
 
 	/**
-	 * The CNTJ command queries the number of jobs of a specified state, on a specified server. 
+	 * The CNTJ command queries the number of jobs of a specified state, on a
+	 * specified server.
 	 * The job state is specified by one of state codes, except 0 for ‘submitted’.
 	 * {@code
 	 * CNTJ joon 0 2 // query the number of running jobs on joon 0
 	 * 1 // the response from ds-server, i.e., 1 running job on joon 0
 	 * }
+	 * 
 	 * @param serverType
 	 * @param serverId
 	 * @param jobState
 	 */
-	@ClientCommand(cmd = "CNTJ")	 
+	@ClientCommand(cmd = "CNTJ")
 	public void C_JobCountForServer(String serverType, int serverId, int jobState) { // TODO Jobstate enum
 		write("CNTJ", serverType, serverId, jobState);
 
 		// read a number
 		var answer = readInt();
 	}
-	
+
 	/**
-	 * The EJWT command queries the sum of estimated waiting times on a given server. It does not take into
-	 * account the remaining runtime of running jobs. Note that the calculation should not be considered to be
-	 * accurate because (1) it is based on estimated runtimes of waiting jobs and (2) more importantly, it does not
+	 * The EJWT command queries the sum of estimated waiting times on a given
+	 * server. It does not take into
+	 * account the remaining runtime of running jobs. Note that the calculation
+	 * should not be considered to be
+	 * accurate because (1) it is based on estimated runtimes of waiting jobs and
+	 * (2) more importantly, it does not
 	 * consider the possibility of parallel execution of waiting jobs.
+	 * 
 	 * @param serverType
 	 * @param serverId
 	 */
-	@ClientCommand(cmd = "EJWT")	 
+	@ClientCommand(cmd = "EJWT")
 	public void C_EstimatedJobWaitingTime(String serverType, int serverId) {
 		write("EJWT", serverType, serverId);
 
 		// read a number
 		var answer = readInt();
 	}
-	
+
 	/**
-	 * The LSTJ command queries the list of running and waiting jobs on a given server. The response to LSTJ
-	 * is formatted in jobID jobState submitTime startTime estRunTime core memory disk. The job state is sent as
-	 * a state code either 1 or 2 for waiting and running, respectively. The response will be a sequence of DATA, a
+	 * The LSTJ command queries the list of running and waiting jobs on a given
+	 * server. The response to LSTJ
+	 * is formatted in jobID jobState submitTime startTime estRunTime core memory
+	 * disk. The job state is sent as
+	 * a state code either 1 or 2 for waiting and running, respectively. The
+	 * response will be a sequence of DATA, a
 	 * series of job information and OK message pairs and ‘.’.
+	 * 
 	 * @param serverType
 	 * @param serverId
 	 */
-	@ClientCommand(cmd = "LSTJ")	 
+	@ClientCommand(cmd = "LSTJ")
 	public void C_ListJobs(String serverType, int serverId) {
 		write("LSTJ", serverType, serverId);
 
 		// Now a data response..
-		//setDataRecordType(JobState.class);
+		// setDataRecordType(JobState.class);
 	}
-	
+
 	/**
-	 * The MIGJ command migrates a job specified by jobID on srcServerID of srcServerType to tgtServerID of
-	 * tgtServerType. The job can be of waiting, running or suspended. The successful migration results in the same
-	 * behaviour of normal scheduling action. In particular, the job’s state on the target server is determined by
-	 * the common criteria of job execution, such as the resource availability and running/waiting jobs of the target
+	 * The MIGJ command migrates a job specified by jobID on srcServerID of
+	 * srcServerType to tgtServerID of
+	 * tgtServerType. The job can be of waiting, running or suspended. The
+	 * successful migration results in the same
+	 * behaviour of normal scheduling action. In particular, the job’s state on the
+	 * target server is determined by
+	 * the common criteria of job execution, such as the resource availability and
+	 * running/waiting jobs of the target
 	 * server. The migrated job will “restart” on the target server.
+	 * 
 	 * @param jobId
 	 * @param srcServerType
 	 * @param srcServerId
 	 * @param targetServerType
 	 * @param targetServerId
 	 */
-	@ClientCommand(cmd = "MIGJ")	 
+	@ClientCommand(cmd = "MIGJ")
 	public void C_MigrateJob(int jobId, String srcServerType, int srcServerId, String targetServerType,
 			int targetServerId) {
 		write("MIGJ", jobId, srcServerType, srcServerId, targetServerType, targetServerId);
 
-		//RX OK
+		// RX OK
 		readAndExecuteCommand();
 	}
-	
+
 	/**
-	 * The KILJ command kills a job. The killed job is pushed back to the queue with the killed time as a new
+	 * The KILJ command kills a job. The killed job is pushed back to the queue with
+	 * the killed time as a new
 	 * submission time. The job will be resubmitted with JOBP.
+	 * 
 	 * @param serverType
 	 * @param serverId
 	 * @param jobId
 	 */
-	@ClientCommand(cmd = "KILJ")	 
+	@ClientCommand(cmd = "KILJ")
 	public void C_KillJob(String serverType, int serverId, int jobId) {
 		write("KILJ", serverType, serverId, jobId);
 
@@ -529,35 +579,36 @@ public class MyClient {
 	}
 
 	/**
-	 * The TERM command terminates a server. All waiting/running jobs are killed and re-submitted 
+	 * The TERM command terminates a server. All waiting/running jobs are killed and
+	 * re-submitted
 	 * for scheduling with JOBP. The server is then put into the inactive state.
+	 * 
 	 * @param serverType
 	 * @param serverId
 	 */
-	@ClientCommand(cmd = "TERM")	 
+	@ClientCommand(cmd = "TERM")
 	public void C_TerminateServer(String serverType, int serverId) {
 		write("TERM", serverType, serverId);
 
-		//Read bynber if jobs killed
+		// Read bynber if jobs killed
 		var jobsKilled = readInt();
 	}
-	
-	@ClientCommand(cmd = "QUIT")	 
+
+	@ClientCommand(cmd = "QUIT")
 	public void C_Quit() {
 		write("QUIT");
 	}
 
-	@ClientCommand(cmd = "OK")	 
+	@ClientCommand(cmd = "OK")
 	public void C_OK() {
 		write("OK");
 	}
 
 	/**
 	 * 
-	 * 	Server Commands
+	 * Server Commands
 	 * 
 	 */
-
 
 	/**
 	 * JOBN - Send a normal job
@@ -574,20 +625,11 @@ public class MyClient {
 		recentJob.disk = disk;
 
 		jobReceived = true;
-		// Debug!
-		//write("QUIT");
-		// C_GetServerState(GETS_State.All, null, null);
 	}
 
 	@ServerCommand(cmd = "JCPL")
 	public void S_RecentlyCompletedJobInfo(int endTime, int jobId, String serverType, int serverId) {
 		jobCompleted = true;
-
-		// for (var srv : _servers) {
-		// 	if (srv.type == serverType && srv.id == serverId) {
-		// 		srv.state = 
-		// 	}
-		// }
 	}
 
 	@ServerCommand(cmd = "RESF")
@@ -609,10 +651,10 @@ public class MyClient {
 	public void S_Data(int numberOfRecords, int recordLength) {
 		C_OK(); // Ack cmd
 
-		//TODO Need to swap types read depending on context.
+		// TODO Need to swap types read depending on context.
 		// Read in numberOfRecords that follows the acknowledgment.
 		try {
-			var array = (Object[])Array.newInstance(dataRecordType, numberOfRecords);
+			var array = (Object[]) Array.newInstance(dataRecordType, numberOfRecords);
 
 			for (int i = 0; i < numberOfRecords; i++) {
 				array[i] = read(dataRecordType);
@@ -625,37 +667,63 @@ public class MyClient {
 			System.err.println(ex.getMessage());
 		}
 	}
-	
-	@ServerCommand(cmd = "OK")
-	public void S_OK() {
-	
-	}
 
+	@ServerCommand(cmd = "OK")
+	public void S_OK() { }
+	
 	@ServerCommand(cmd = "QUIT")
 	public void S_QUIT() {
+		//Upon receiving a QUIT confirmation from the server, stop the client from looping.
 		runClient = false;
 	}
 
 	@ServerCommand(cmd = "NONE")
 	public void S_None() {
+		// Once we receive a NONE message, we can initiate the QUIT sequence.
 		C_Quit();
 	}
 
 	@ServerCommand(cmd = ".")
 	public void S_Dot() {
+		// We can potentially now send a ready
+		// C_Ready();
 	}
 
-	@ServerCommand(cmd = "err")
+	@ServerCommand(cmd = "ERR")
 	public void S_Error(String message) {
 		System.out.println(ANSI_RED + "ERR: " + message);
 	}
 }
 
+/***************************************************************************************************
+ * 
+ * 												TYPES
+ * 
+ **************************************************************************************************/
+
+/**
+ * ServerCommand annotation type. This is used to mark methods which should 
+ * be interpreted as commands originating from the server.
+ * The cmd field should be the expected command string from the server,
+ * i.e. 'JOBN', 'JCPL', etc
+ * 
+ * The interface must be marked with a Rentention policy annotation to ensure
+ * it is retained at runtime.
+ */
 @Retention(RetentionPolicy.RUNTIME)
 @interface ServerCommand {
 	String cmd();
 }
 
+/**
+ * ClientCommand annotation type. This is used to mark methods which should 
+ * be interpreted as commands originating from the Client.
+ * The cmd field should be the expected command string from the Client,
+ * i.e. 'SCHD', 'AUTH', etc
+ * 
+ * The interface must be marked with a Rentention policy annotation to ensure
+ * it is retained at runtime.
+ */
 @Retention(RetentionPolicy.RUNTIME)
 @interface ClientCommand {
 	String cmd();
@@ -680,8 +748,7 @@ class Job extends Applicance {
 	public int queuedTime;
 	public int estRunTime;
 
-	public Job() {
-	}
+	public Job() { }
 	// state ?
 }
 
@@ -704,7 +771,7 @@ class ServerState {
 	public int meanAbsDeviationOfFailure;
 	public int lastServerStartTime;
 
-	public ServerState() {}
+	public ServerState() { }
 }
 
 class Server extends Applicance {
@@ -714,7 +781,7 @@ class Server extends Applicance {
 	public int bootupTime;
 	public float hourlyRate;
 
-	public Server() {}
+	public Server() { }
 }
 
 class Applicance {
@@ -722,7 +789,7 @@ class Applicance {
 	public int memory;
 	public int disk;
 
-	public Applicance() {}
+	public Applicance() { }
 
 	@Override
 	public String toString() {
@@ -758,7 +825,7 @@ enum ListType {
 	Number("#"),
 	Dollar("$"),
 	Index("i");
-	
+
 	private String cmd;
 
 	private ListType(String command) {
@@ -767,7 +834,7 @@ enum ListType {
 
 	public String getCommand() {
 		return cmd;
-	} 
+	}
 }
 
 enum EnumJobState {
@@ -799,6 +866,9 @@ enum EnumJobState {
 	}
 }
 
+/**
+ * Utility enumeration for managing the verbosity of client terminal output.
+ */
 enum SysLogLevel {
 	None(0),
 	Info(5),
@@ -816,5 +886,18 @@ enum SysLogLevel {
 
 	public boolean isLowerOrEqualTo(SysLogLevel other) {
 		return this.level <= other.level;
+	}
+}
+
+/**
+ * A container for caching a method and it's parameters for dynamic invocation.
+ */
+class MethodCallData {
+	public Method method;
+	public Parameter[] parameters;
+	
+	public MethodCallData(Method m, Parameter[] p) {
+		this.method = m;
+		this.parameters = p;
 	}
 }
