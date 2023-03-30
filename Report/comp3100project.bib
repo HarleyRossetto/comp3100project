@@ -1,0 +1,48 @@
+@article{lamportclock78,
+author = {Lamport, Leslie},
+title = {Time, Clocks, and the Ordering of Events in a Distributed System},
+year = {1978},
+issue_date = {July 1978},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+volume = {21},
+number = {7},
+issn = {0001-0782},
+url = {https://doi.org/10.1145/359545.359563},
+doi = {10.1145/359545.359563},
+abstract = {The concept of one event happening before another in a distributed system is examined,
+and is shown to define a partial ordering of the events. A distributed algorithm is
+given for synchronizing a system of logical clocks which can be used to totally order
+the events. The use of the total ordering is illustrated with a method for solving
+synchronization problems. The algorithm is then specialized for synchronizing physical
+clocks, and a bound is derived on how far out of synchrony the clocks can become.},
+journal = {Commun. ACM},
+month = jul,
+pages = {558–565},
+numpages = {8},
+keywords = {computer networks, multiprocess systems, clock synchronization, distributed systems}
+}
+
+@inproceedings{mesos2011,
+author = {Hindman, Benjamin and Konwinski, Andy and Zaharia, Matei and Ghodsi, Ali and Joseph, Anthony D. and Katz, Randy and Shenker, Scott and Stoica, Ion},
+title = {Mesos: A Platform for Fine-Grained Resource Sharing in the Data Center},
+year = {2011},
+publisher = {USENIX Association},
+address = {USA},
+abstract = {We present Mesos, a platform for sharing commodity clusters between multiple diverse
+cluster computing frameworks, such as Hadoop and MPI. Sharing improves cluster utilization
+and avoids per-framework data replication. Mesos shares resources in a fine-grained
+manner, allowing frameworks to achieve data locality by taking turns reading data
+stored on each machine. To support the sophisticated schedulers of today's frameworks,
+Mesos introduces a distributed two-level scheduling mechanism called resource offers.
+Mesos decides how many resources to offer each framework, while frameworks decide
+which resources to accept and which computations to run on them. Our results show
+that Mesos can achieve near-optimal data locality when sharing the cluster among diverse
+frameworks, can scale to 50,000 (emulated) nodes, and is resilient to failures.},
+booktitle = {Proceedings of the 8th USENIX Conference on Networked Systems Design and Implementation},
+pages = {295–308},
+numpages = {14},
+location = {Boston, MA},
+series = {NSDI'11}
+}
+
