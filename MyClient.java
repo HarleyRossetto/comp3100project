@@ -19,7 +19,7 @@ public class MyClient {
 	public static final String ANSI_CYAN 	= "\u001B[36m";
 	public static final String ANSI_WHITE 	= "\u001B[37m";
 
-	private SysLogLevel sysMessageLogLevel = SysLogLevel.Info;
+	private SysLogLevel sysMessageLogLevel = SysLogLevel.None;
 
 	private Map<String, MethodCallData> commandMap = new HashMap<String, MethodCallData>();
 
@@ -1008,6 +1008,7 @@ class ServerList {
 	public ServerList(int order, Server_ABC firstServer) {
 		this.order = order;
 		this.servers = new ArrayList<>(20);
+		servers.add(firstServer);
 	}
 }
 
