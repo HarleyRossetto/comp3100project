@@ -19,7 +19,7 @@ public class MyClient {
 	public static final String ANSI_CYAN 	= "\u001B[36m";
 	public static final String ANSI_WHITE 	= "\u001B[37m";
 
-	private SysLogLevel sysMessageLogLevel = SysLogLevel.None;
+	private SysLogLevel sysMessageLogLevel = SysLogLevel.Info;
 
 	private Map<String, MethodCallData> commandMap = new HashMap<String, MethodCallData>();
 
@@ -32,19 +32,16 @@ public class MyClient {
 
 	private Class<?> dataRecordType = null;
 
-	private Object[] server_data = null;
-
-	private ServerState[] _servers = null;
-
-	private boolean largestServerFound = false;
-	private ServerState largestServer = null;
-	private int numLargestServers = 0;
+	private Object[] response_data = null;
 
 	private boolean jobReceived = false;
 	private Job recentJob = null;
 	private boolean jobCompleted = false;
 
-	private int bigServerIndex = 0;
+	// List of servers, keeps track of servers and jobs queued on them.
+	private Map<String, ServerList> servers;
+
+	private Scheduler scheduler;
 
 	public MyClient() {
 		mapCommands();
@@ -57,8 +54,10 @@ public class MyClient {
 		}
 
 		if (runClient) {
+			scheduler = new RoundRobinScheduler();
+
 			C_AuthHandshake();
-		
+
 			// Initial ready message
 			while (runClient) {
 				LRR();
@@ -68,154 +67,71 @@ public class MyClient {
 		closeSocket();
 	}
 
-	private void initSocket() throws UnknownHostException, IOException {
-		socket = new Socket("localhost", 50000);
-
-		inputStream = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-		outputStream = new DataOutputStream(socket.getOutputStream());
-	}
-
-	private void closeSocket() {
-		try {
-			outputStream.close();
-			inputStream.close();
-			socket.close();
-		} catch (IOException ioex) {
-			System.err.println(ioex.getMessage());
-		}
-	}
-
-	private void writeSysMsg(SysLogLevel level, String msg) {
-		if (level.isLowerOrEqualTo(sysMessageLogLevel))
-			System.out.println(ANSI_YELLOW + "SYS: " + msg + ANSI_WHITE);
-	}
-
 	private void LRR() {
 		C_Ready();
 
-		readAndExecuteCommand(); // Typically JOBN, JCPL, NONE
+		handleNextMessage(); // Typically JOBN, JCPL, NONE
 
-		if (!largestServerFound) {
-			findLargestServer();
-		}
-
+		if (!scheduler.initialised())
+			scheduler.initialise(this);
+		
 		if (jobReceived && recentJob != null) {
 			jobReceived = false;
-			C_Schedule(recentJob.jobId, largestServer.type, bigServerIndex++ % numLargestServers);
 
-			readAndExecuteCommand(); // Hopefully OK
+			// Run the scheduler with most recent job.
+			scheduler.run(recentJob);
 
 			recentJob = null;
 		} else if (jobCompleted) {
+			// If a job has been completed (rxd JCPL) then we dont have any response so just go back to REDY
 			jobCompleted = false;
-		} else {
-			readAndExecuteCommand(); // Receive .
+		} else { // We are quitting, so read that in,
+			handleNextMessage(); // Quit
 		}
-
 	}
 
-	private void findLargestServer() {
+	public void loadServerInfo() {
 		C_GetServerState(GETS_State.All, null, null);
+		
+		handleNextMessage(); // Hopefully DATA
 
-		readAndExecuteCommand(); // Hopefully DATA
+		// Assume there are at least 3 servers per type, 
+		// That way we don't allocate too much or too little space causing reallocations and copies.
+		servers = new HashMap<String, ServerList>(response_data.length / 3);
 
-		_servers = (ServerState[]) server_data;
-		int cpuMax = Integer.MIN_VALUE;
+		var svrs = (ServerState[])response_data;
 
-		largestServer = _servers[0];
-		numLargestServers = 1;
-
-		for (int i = 0; i < _servers.length; i++) {
-			if (_servers[i].core > cpuMax && !largestServer.type.equals(_servers[i].type)) {
-				cpuMax = _servers[i].core;
-				largestServer = _servers[i];
-				numLargestServers = 1;
-			} else if (largestServer.type.equals(_servers[i].type)) {
-				numLargestServers++;
+		int order = 0;
+		for (ServerState serverState : svrs) {
+			// If we already have this type registered, add this server to the array.
+			// otherwise add new type mapping and server to dictionary.
+			var s = servers.get(serverState.type);
+			if (s != null) {
+				s.servers.add(new Server_ABC(serverState));
+				//servers.put(serverState.type, new ServerList(0, new Server_ABC(serverState)));
 			} else {
-				continue;
+				servers.put(serverState.type, new ServerList(order, new Server_ABC(serverState)));
+				order++;
+				//servers.put(serverState.type, new ArrayList<Server_ABC>(List.of(new Server_ABC(serverState))));
 			}
 		}
-		largestServerFound = true;
-		readAndExecuteCommand(); // Receive .
+
+		handleNextMessage(); // .
 	}
 
-	private void write(StringBuilder sb) {
-		write(sb.toString());
-	}
-
-	private void write(String message) {
-		try {
-			outputStream.write((message + "\n").getBytes());
-			outputStream.flush();
-			writeSysMsg(SysLogLevel.Info, ANSI_GREEN + "TXD: " + message + ANSI_WHITE);
-		} catch (Exception ex) {
-			System.err.println(ex.getMessage());
-		}
-	}
-
-	private void write(Object... args) {
-		StringBuilder sb = new StringBuilder(32);
-		for (Object object : args) {
-			sb.append(object).append(' ');
-		}
-		if (args.length > 1) {
-			sb.deleteCharAt(sb.length() - 1);
-		}
-		write(sb);
-	}
-
-	private String read() {
-		try {
-			var response = inputStream.readLine();
-			writeSysMsg(SysLogLevel.Info, "RXD: " + response);
-			return response;
-		} catch (Exception ex) {
-			System.err.println(ex.getMessage());
-			return "";
-		}
-	}
-
-	private Integer readInt() {
-		var res = read();
-		if (res.length() > 0) {
-			return Integer.valueOf(res);
-		}
-		return null;
-	}
-
-	private <T> T read(Class<T> asType) {
-		var response = read().split(" ");
-		int responseIdx = 0;
-
-		try {
-			// Instantiate a new intance of the desired type. Because Java has god-aweful generics
-			// we need to recast that instance as the desired type afterwards..
-			// All objects will require a default constructor with no parameters (must be manually
-			// specified in type), thus we will always use the first constructor for instantiation.
-			T instance = asType.cast(asType.getConstructors()[0].newInstance());
-
-			for (var member : instance.getClass().getFields()) {
-				// Break loop if there are no more params.
-				// In some cases there will be objects that can store more values should they be
-				// provided by the incoming data. If not we will break early and not set those fields.
-				if (responseIdx >= response.length)
-					break;
-
-				member.set(instance, castArgument(member.getType(), response[responseIdx++]));
-			}
-
-			return instance;
-		} catch (Exception ex) {
-			System.err.println(ex.getMessage());
-		}
-
-		return null;
-	}
-
+	/**
+	 * Used to cache the expected object type that will be read in by the next DATA message
+	 * @param type
+	 */
 	public void setDataRecordType(Class<?> type) {
 		this.dataRecordType = type;
 	}
+
+/***************************************************************************************************
+ * 
+ * 								Command Discover & Execution
+ * 
+ **************************************************************************************************/
 
 	/**
 	 * Creates a map of all methods annotated with the Command annotation type.
@@ -229,16 +145,12 @@ public class MyClient {
 
 			if (cmdat != null) {
 				commandMap.put(cmdat.cmd(), new MethodCallData(m, m.getParameters()));
-				writeSysMsg(SysLogLevel.Full, "Mapped command " + cmdat.cmd());
+				writeConsoleSysMsg(SysLogLevel.Full, "Mapped command ", cmdat.cmd());
 				count++;
 			}
 		}
 
-		writeSysMsg(SysLogLevel.Info, "Mapped " + count + " commands.");
-	}
-
-	private void readAndExecuteCommand() {
-		findAndExecuteCommand(read());
+		writeConsoleSysMsg(SysLogLevel.Info, new StringBuilder().append("Mapped ").append(count).append(" commands."));
 	}
 
 	private void findAndExecuteCommand(String args) {
@@ -248,7 +160,7 @@ public class MyClient {
 		// Try get the command, if it doesn't exist print error and return.
 		var commandMethod = commandMap.get(splitArgs[CMD_IDX]);
 		if (commandMethod == null) {
-			System.err.println("Command " + splitArgs[CMD_IDX] + " is invalid.");
+			writeConsoleErrMsg(SysLogLevel.Full, "Command ", splitArgs[CMD_IDX], " is invalid.");
 			return;
 		}
 
@@ -262,31 +174,40 @@ public class MyClient {
 		executeCommand(commandMethod, argsToPass);
 	}
 
+	public void handleNextMessage() {
+		findAndExecuteCommand(read());
+	}
+
 	/*
 	 * Get params
 	 * very args and params length matches
 	 * cast all args to param types
-	 * invoke method with typecase args
+	 * invoke method with typecast args
 	 */
 	private void executeCommand(MethodCallData m, String[] args) {
-		// If we didnt receive enough params, return and print error.
+		// If we didnt receive enough params, print error and return.
 		if (args.length != m.parameters.length) {
-			System.err.println(
-					"Cannot invoke " + m.method.getName() + ", expected " + m.parameters.length + " parameters, got "
-							+ args.length);
+			writeConsoleSysMsg(SysLogLevel.Full, 
+						"Cannot invoke ",
+						m.method.getName(),
+						", expected ",
+						m.parameters.length,
+						" parameters, got ",
+						args.length);
 			return;
 		}
 
 		List<Object> castParams = new ArrayList<Object>(m.parameters.length);
 		int argIdx = 0;
-		var sb = new StringBuilder();
+		var sb = new StringBuilder(96);
 
 		for (Parameter p : m.parameters) {
 			var pType = p.getType();
 
+			// Cast argument to function parameter
 			var castType = castArgument(pType, args[argIdx++]);
 			if (castType == null) {
-				System.err.println("Cannot cast param " + p.getName() + " of type " + pType);
+				writeConsoleErrMsg(SysLogLevel.Full, "Cannot cast param ", p.getName(), " of type ", pType);
 			} else {
 				castParams.add(castType);
 			}
@@ -295,12 +216,18 @@ public class MyClient {
 		}
 
 		try {
-			writeSysMsg(SysLogLevel.Info, "Invoking: " + m.method.getName());
-			writeSysMsg(SysLogLevel.Full, sb.toString());
+			writeConsoleSysMsg(SysLogLevel.Full, new StringBuilder("Invoking: ").append(m.method.getName()));
+			// If we have some arguments, then print them out if running with SysLogLevel.Full verbosity.
+			if (sb.length() > 0)
+				writeConsoleSysMsg(SysLogLevel.Full, sb);
 			// Invoke the method with params
 			m.method.invoke(this, castParams.toArray());
 		} catch (Exception ex) {
-			System.err.println("Fail to invoke " + m.method.getName() + "\n" + ex.getMessage());
+			writeConsoleSysMsg(SysLogLevel.Full,
+						"Failed to invoke ",
+						m.method.getName(),
+						"\n",
+						ex.getMessage());
 		}
 	}
 
@@ -320,17 +247,18 @@ public class MyClient {
 		return null;
 	}
 
-	/**
-	 * 
-	 * Client Commands
-	 * 
-	 */
+/***************************************************************************************************
+ * 
+ * 											Client Messages
+ * 
+ **************************************************************************************************/
+
 	public void C_AuthHandshake() {
 		// Auth handshake
 		write("HELO");
-		readAndExecuteCommand(); // OK
-		write("AUTH " + System.getProperty("user.name"));
-		readAndExecuteCommand(); // OK
+		handleNextMessage(); // OK
+		write("AUTH", System.getProperty("user.name"));
+		handleNextMessage(); // OK
 	}
 
 	/*
@@ -373,7 +301,7 @@ public class MyClient {
 				break;
 			case Type:
 				if (type == null) {
-					System.err.println("GETS requires param type to be specified with flag Type");
+					writeConsoleSysMsg(SysLogLevel.Full, "GETS requires param type to be specified with flag Type");
 					return;
 				}
 				sb.append(type);
@@ -381,7 +309,7 @@ public class MyClient {
 			case Capable:
 			case Available:
 				if (sys == null) {
-					System.err.println("GETS requires param sys to be specified with flag " + state.getLabel());
+					writeConsoleSysMsg(SysLogLevel.Full, "GETS requires param sys to be specified with flag ", state.getLabel());
 					return;
 				}
 				sb.append(sys.toString());
@@ -397,8 +325,18 @@ public class MyClient {
 	 * {@code SCHD 3 joon 1}
 	 */
 	@ClientCommand(cmd = "SCHD")
-	public void C_Schedule(int jobId, String serverType, int serverId) {
-		write("SCHD", jobId, serverType, serverId);
+	public void C_Schedule(Job job, String serverType, int serverId) {
+		var svr = servers.get(serverType).servers.get(serverId);
+		
+		// If the server currently has no jobs in its queue, we will default the job state to running.
+		if (svr.jobs.isEmpty()) 
+			job.state = EnumJobState.Running;
+		else // Otherwise the state will be submitted.
+			job.state = EnumJobState.Submitted;
+
+		svr.jobs.enqueue(job);
+		
+		write("SCHD", job.jobId, serverType, serverId);	
 	}
 
 	/**
@@ -440,7 +378,7 @@ public class MyClient {
 
 		if (type == ListType.Index) {
 			if (i == null) {
-				System.err.println("Cannot get job info for queue: " + queueName + " with Index type when i is null");
+				writeConsoleErrMsg(SysLogLevel.Full, "Cannot get job info for queue: ", queueName, " with Index type when i is null");
 				return;
 			}
 
@@ -459,11 +397,6 @@ public class MyClient {
 				break;
 			case Number:
 				var numberOfJobsInQueue = Integer.valueOf(read());
-
-				if (numberOfJobsInQueue.intValue() == 0) {
-					C_Quit();
-				}
-
 				break;
 			case All:
 				setDataRecordType(Job.class);
@@ -558,7 +491,7 @@ public class MyClient {
 		write("MIGJ", jobId, srcServerType, srcServerId, targetServerType, targetServerId);
 
 		// RX OK
-		readAndExecuteCommand();
+		handleNextMessage();
 	}
 
 	/**
@@ -575,7 +508,7 @@ public class MyClient {
 		write("KILJ", serverType, serverId, jobId);
 
 		// RX OK
-		readAndExecuteCommand();
+		handleNextMessage();
 	}
 
 	/**
@@ -590,13 +523,14 @@ public class MyClient {
 	public void C_TerminateServer(String serverType, int serverId) {
 		write("TERM", serverType, serverId);
 
-		// Read bynber if jobs killed
+		// Read number of jobs killed
 		var jobsKilled = readInt();
 	}
 
 	@ClientCommand(cmd = "QUIT")
 	public void C_Quit() {
 		write("QUIT");
+		// runClient = false;
 	}
 
 	@ClientCommand(cmd = "OK")
@@ -604,31 +538,45 @@ public class MyClient {
 		write("OK");
 	}
 
-	/**
-	 * 
-	 * Server Commands
-	 * 
-	 */
+/***************************************************************************************************
+ * 
+ * 											Server Messages
+ * 
+ **************************************************************************************************/
 
 	/**
 	 * JOBN - Send a normal job
 	 */
 	@ServerCommand(cmd = "JOBN")
 	public void S_JOBN(int submitTime, int jobId, int estRuntime, int core, int memory, int disk) {
-		// do some stuff
+		// Setup job object
 		recentJob = new Job();
-		recentJob.submitTime = submitTime;
-		recentJob.jobId = jobId;
-		recentJob.estRunTime = estRuntime;
-		recentJob.cores = core;
-		recentJob.memory = memory;
-		recentJob.disk = disk;
+		recentJob.submitTime 	= submitTime;
+		recentJob.jobId 		= jobId;
+		recentJob.estRunTime 	= estRuntime;
+		recentJob.cores 		= core;
+		recentJob.memory 		= memory;
+		recentJob.disk 			= disk;
+		recentJob.state 		= EnumJobState.Waiting;
 
 		jobReceived = true;
 	}
 
 	@ServerCommand(cmd = "JCPL")
 	public void S_RecentlyCompletedJobInfo(int endTime, int jobId, String serverType, int serverId) {
+		// Update local system state - dequeue the job from the servers working queue and add to completed list.
+		var svr = servers.get(serverType).servers.get(serverId);
+		var j = svr.jobs.dequeue();
+		
+		j.state = EnumJobState.Completed;
+		j.endTime = endTime;
+		
+		svr.completedJobs.enqueue(j);
+
+		// Set the next job to running.
+		if (svr.jobs.peek() != null)
+			svr.jobs.peek().state = EnumJobState.Running;
+
 		jobCompleted = true;
 	}
 
@@ -651,7 +599,6 @@ public class MyClient {
 	public void S_Data(int numberOfRecords, int recordLength) {
 		C_OK(); // Ack cmd
 
-		// TODO Need to swap types read depending on context.
 		// Read in numberOfRecords that follows the acknowledgment.
 		try {
 			var array = (Object[]) Array.newInstance(dataRecordType, numberOfRecords);
@@ -660,11 +607,11 @@ public class MyClient {
 				array[i] = read(dataRecordType);
 			}
 
-			server_data = array;
+			response_data = array;
 
 			C_OK(); // Ack data
 		} catch (Exception ex) {
-			System.err.println(ex.getMessage());
+			writeConsoleSysMsg(SysLogLevel.Full, ex.getMessage());
 		}
 	}
 
@@ -684,14 +631,159 @@ public class MyClient {
 	}
 
 	@ServerCommand(cmd = ".")
-	public void S_Dot() {
-		// We can potentially now send a ready
-		// C_Ready();
-	}
+	public void S_Dot() { }
 
 	@ServerCommand(cmd = "ERR")
 	public void S_Error(String message) {
-		System.out.println(ANSI_RED + "ERR: " + message);
+		writeConsoleErrMsg(SysLogLevel.Info, ANSI_RED, "ERR: ", message);
+	}
+		
+/***************************************************************************************************
+ * 
+ * 										Socket Utilities
+ * 
+ **************************************************************************************************/
+
+	private void initSocket() throws UnknownHostException, IOException {
+		socket = new Socket("localhost", 50000);
+
+		inputStream = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+		outputStream = new DataOutputStream(socket.getOutputStream());
+	}
+
+	private void closeSocket() {
+		try {
+			outputStream.close();
+			inputStream.close();
+			socket.close();
+		} catch (IOException ioex) {
+			System.err.println(ioex.getMessage());
+		}
+	}
+
+	private void write(StringBuilder sb) {
+		try {
+			outputStream.write(sb.append("\n").toString().getBytes());
+			outputStream.flush();
+			if (SysLogLevel.Info.isLowerOrEqualTo(sysMessageLogLevel))
+				sb.insert(0, "TXD: ").insert(0, ANSI_GREEN).deleteCharAt(sb.length() - 1).append(ANSI_WHITE);
+				writeConsoleMsg(SysLogLevel.Info, sb);
+			} catch (Exception ex) {
+			
+			writeConsoleErrMsg(SysLogLevel.Full, ex.getMessage());
+		}
+	}
+
+	private void write(Object... args) {
+		// Initialise a Stringbuilder with starting size of 64
+		StringBuilder sb = new StringBuilder(64).append(args[0]);
+		for (int i = 1; i < args.length; i++) {
+			sb.append(' ').append(args[i]);
+
+		}
+		write(sb);
+	}
+
+	private String read() {
+		try {
+			var response = inputStream.readLine();
+			
+			writeConsoleMsg(SysLogLevel.Info, new StringBuilder(response).insert(0, "RXD: "));
+
+			return response;
+		} catch (Exception ex) {
+			writeConsoleErrMsg(SysLogLevel.Full, ex.getMessage());
+			return "";
+		}
+	}
+
+	private Integer readInt() {
+		var res = read();
+		if (res.length() > 0) {
+			return Integer.valueOf(res);
+		}
+		return null;
+	}
+
+	private <T> T read(Class<T> asType) {
+		var response = read().split(" ");
+		int responseIdx = 0;
+
+		try {
+			// Instantiate a new intance of the desired type. Because Java has god-aweful generics
+			// we need to recast that instance as the desired type afterwards..
+			// All objects will require a default constructor with no parameters (must be manually
+			// specified in type), thus we will always use the first constructor for instantiation.
+			T instance = asType.cast(asType.getConstructors()[0].newInstance());
+
+			for (var member : instance.getClass().getFields()) {
+				// Break loop if there are no more params.
+				// In some cases there will be objects that can store more values should they be
+				// provided by the incoming data. If not we will break early and not set those fields.
+				if (responseIdx >= response.length)
+					break;
+
+				member.set(instance, castArgument(member.getType(), response[responseIdx++]));
+			}
+
+			return instance;
+		} catch (Exception ex) {
+			writeConsoleErrMsg(SysLogLevel.Full, ex.getMessage());
+		}
+
+		return null;
+	}
+
+/***************************************************************************************************
+ * 
+ * 												Utilities
+ * 
+ **************************************************************************************************/
+
+	private StringBuilder paramsArrayToStringBuilder(Object... params) {
+		if (params.length == 1)
+			return new StringBuilder(params[0].toString());
+		else if (params.length == 0) {
+			return new StringBuilder();
+		} else {
+			var sb = new StringBuilder(64);
+			for (Object object : params) {
+				sb.append(object);
+			}
+
+			return sb;
+		}
+	}
+
+	private void writeConsoleSysMsg(SysLogLevel level, Object... params) {
+		writeConsoleMsg(level, paramsArrayToStringBuilder(params).insert(0, "SYS: ").insert(0, ANSI_YELLOW).append(ANSI_WHITE));
+	}
+
+	private void writeConsoleSysMsg(SysLogLevel level, StringBuilder sb) {
+		writeConsoleMsg(level, sb.insert(0, "SYS: ").insert(0, ANSI_YELLOW).append(ANSI_WHITE));
+	}
+
+	private void writeConsoleErrMsg(SysLogLevel level, StringBuilder sb) {
+		writeConsoleMsg(level, sb.insert(0, "ERR: ").insert(0, ANSI_RED).append(ANSI_WHITE));
+	}
+
+	private void writeConsoleErrMsg(SysLogLevel level, String s) {
+		writeConsoleMsg(level, new StringBuilder(s).insert(0, "ERR: ").insert(0, ANSI_RED).append(ANSI_WHITE));
+	}
+
+	private void writeConsoleErrMsg(SysLogLevel level, Object... args) {
+		var sb = paramsArrayToStringBuilder(args);
+		writeConsoleMsg(level, sb.insert(0, "ERR: ").insert(0, ANSI_RED).append(ANSI_WHITE));
+	}
+
+	private void writeConsoleMsg(SysLogLevel level, StringBuilder sb) {
+		if (level.isLowerOrEqualTo(sysMessageLogLevel))
+			System.out.println("+ " + sb);
+	}
+
+
+	public Map<String, ServerList> getServerInfo() {
+		return this.servers;
 	}
 }
 
@@ -748,8 +840,10 @@ class Job extends Applicance {
 	public int queuedTime;
 	public int estRunTime;
 
+	public EnumJobState state;
+	public int endTime;
+
 	public Job() { }
-	// state ?
 }
 
 class ServerState {
@@ -895,9 +989,124 @@ enum SysLogLevel {
 class MethodCallData {
 	public Method method;
 	public Parameter[] parameters;
-	
+
 	public MethodCallData(Method m, Parameter[] p) {
 		this.method = m;
 		this.parameters = p;
+	}
+}
+
+class ServerList {
+	public final List<Server_ABC> servers;
+	public final int order;
+
+	public ServerList(int order, List<Server_ABC> svrs) {
+		this.order = order;
+		this.servers = svrs;
+	}
+
+	public ServerList(int order, Server_ABC firstServer) {
+		this.order = order;
+		this.servers = new ArrayList<>(20);
+	}
+}
+
+/*
+ 
+ * 		Server Dictionary
+ * 			Servers[] server count, ID is index
+ * 				Server info
+ * 				Queue
+ * 					Job
+ * 
+ */
+
+class Server_ABC {
+	public final ServerState server;
+	public final JobQueue jobs = new JobQueue();
+	public final JobQueue completedJobs = new JobQueue();
+
+	public Server_ABC(ServerState svr) {
+		server = svr;
+	}
+}
+
+class JobQueue extends LinkedList<Job> {
+
+	public JobQueue() {
+		super();
+	}
+
+	public void enqueue(Job j) {
+		this.add(j);
+	}
+
+	public Job dequeue() {
+		return this.poll();
+	}
+}
+
+interface IScheduler {
+	void run(Job newJob);
+}
+
+abstract class Scheduler implements IScheduler {
+	private boolean initialised = false;
+	protected MyClient client;
+
+	void initialise(MyClient client) {
+		this.client = client;
+		initialised = true;
+	}
+
+	public boolean initialised() {
+		return initialised;
+	}
+}
+
+class RoundRobinScheduler extends Scheduler {
+	private ServerState largestServer;
+	private int largestServerCount;
+	private int serverScheduleIndex = 0;
+
+	public void initialise(MyClient c) {
+		super.initialise(c);
+		client.loadServerInfo();
+		findFirstLargestServer();
+	}
+
+	private void findFirstLargestServer() {
+		int cpuMax = Integer.MIN_VALUE;
+
+		var sortedList = new ArrayList<>(client.getServerInfo().entrySet());
+		Collections.sort(sortedList, (o1, o2) -> {
+			var first = (Map.Entry<String, ServerList>) o1;
+			var second = (Map.Entry<String, ServerList>) o2;
+			if (first.getValue().order > second.getValue().order)
+				return 1;
+			if (first.getValue().order < second.getValue().order)
+				return -1;
+			return 0;
+		});
+
+		for (var set : sortedList) {
+			var serverTypeList = set.getValue().servers;
+			if (serverTypeList.size() > 0) {
+				var firstServer = serverTypeList.get(0).server;
+				if (largestServer == null
+						|| firstServer.core > cpuMax && !firstServer.type.equals(largestServer.type)) {
+					cpuMax = firstServer.core;
+					largestServer = firstServer;
+					largestServerCount = serverTypeList.size();
+				}
+			}
+		}
+	}
+
+	@Override
+	public void run(Job newJob) {
+		client.C_Schedule(newJob, largestServer.type, serverScheduleIndex++ % largestServerCount);
+
+		client.handleNextMessage(); // Ok message.
 	}
 }
