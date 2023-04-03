@@ -19,7 +19,7 @@ public class MyClient {
 	public static final String ANSI_CYAN 	= "\u001B[36m";
 	public static final String ANSI_WHITE 	= "\u001B[37m";
 
-	private SysLogLevel sysMessageLogLevel = SysLogLevel.None;
+	private EnumSysLogLevel sysMessageLogLevel = EnumSysLogLevel.None;
 
 	private Map<String, MethodCallData> commandMap = new HashMap<String, MethodCallData>();
 
@@ -34,14 +34,16 @@ public class MyClient {
 
 	private Object[] response_data = null;
 
-	private boolean jobReceived = false;
-	private Job recentJob = null;
 	private boolean jobCompleted = false;
 
 	// List of servers, keeps track of servers and jobs queued on them.
 	private Map<String, ServerList> servers;
 
 	private Scheduler scheduler;
+
+	private boolean quit = false;
+
+	public JobQueue incomingJobs = new JobQueue();
 
 	public MyClient() {
 		mapCommands();
@@ -60,14 +62,14 @@ public class MyClient {
 
 			// Initial ready message
 			while (runClient) {
-				LRR();
+				run();
 			}
 		}
 			
 		closeSocket();
 	}
 
-	private void LRR() {
+	private void run() {
 		C_Ready();
 
 		handleNextMessage(); // Typically JOBN, JCPL, NONE
@@ -75,25 +77,31 @@ public class MyClient {
 		if (!scheduler.initialised())
 			scheduler.initialise(this);
 		
-		if (jobReceived && recentJob != null) {
-			jobReceived = false;
-
+		if (quit)
+			handleNextMessage();
+		else {
 			// Run the scheduler with most recent job.
-			scheduler.run(recentJob);
-
-			recentJob = null;
-		} else if (jobCompleted) {
-			// If a job has been completed (rxd JCPL) then we dont have any response so just go back to REDY
-			jobCompleted = false;
-		} else { // We are quitting, so read that in,
-			handleNextMessage(); // Quit
+			scheduler.run();
 		}
+
+		// // If a new job has been received
+		// if (recentJob != null || jobCompleted) {
+			
+			
+		// 	recentJob = null;
+
+		// 	// If a job has been completed (rxd JCPL) then we dont have any response so just go back to REDY
+		// 	if (jobCompleted)
+		// 		jobCompleted = false;
+		// } else { // We are quitting, so read that in,
+		// 	handleNextMessage(); // Quit
+		// }
 	}
 
 	public void loadServerInfo() {
-		C_GetServerState(GETS_State.All, null, null);
+		C_GetServerState(EnumGETSState.All, null, null);
 		
-		handleNextMessage(); // Hopefully DATA
+		handleNextMessage(); // DATA
 
 		// Assume there are at least 3 servers per type, 
 		// That way we don't allocate too much or too little space causing reallocations and copies.
@@ -107,10 +115,10 @@ public class MyClient {
 			// otherwise add new type mapping and server to dictionary.
 			var s = servers.get(serverState.type);
 			if (s != null) {
-				s.servers.add(new Server_ABC(serverState));
+				s.servers.add(new ComputeServer(serverState));
 				//servers.put(serverState.type, new ServerList(0, new Server_ABC(serverState)));
 			} else {
-				servers.put(serverState.type, new ServerList(order, new Server_ABC(serverState)));
+				servers.put(serverState.type, new ServerList(order, new ComputeServer(serverState)));
 				order++;
 				//servers.put(serverState.type, new ArrayList<Server_ABC>(List.of(new Server_ABC(serverState))));
 			}
@@ -145,12 +153,12 @@ public class MyClient {
 
 			if (cmdat != null) {
 				commandMap.put(cmdat.cmd(), new MethodCallData(m, m.getParameters()));
-				writeConsoleSysMsg(SysLogLevel.Full, "Mapped command ", cmdat.cmd());
+				writeConsoleSysMsg(EnumSysLogLevel.Full, "Mapped command ", cmdat.cmd());
 				count++;
 			}
 		}
 
-		writeConsoleSysMsg(SysLogLevel.Info, new StringBuilder().append("Mapped ").append(count).append(" commands."));
+		writeConsoleSysMsg(EnumSysLogLevel.Info, new StringBuilder().append("Mapped ").append(count).append(" commands."));
 	}
 
 	private void findAndExecuteCommand(String args) {
@@ -160,7 +168,7 @@ public class MyClient {
 		// Try get the command, if it doesn't exist print error and return.
 		var commandMethod = commandMap.get(splitArgs[CMD_IDX]);
 		if (commandMethod == null) {
-			writeConsoleErrMsg(SysLogLevel.Full, "Command ", splitArgs[CMD_IDX], " is invalid.");
+			writeConsoleErrMsg(EnumSysLogLevel.Full, "Command ", splitArgs[CMD_IDX], " is invalid.");
 			return;
 		}
 
@@ -187,7 +195,7 @@ public class MyClient {
 	private void executeCommand(MethodCallData m, String[] args) {
 		// If we didnt receive enough params, print error and return.
 		if (args.length != m.parameters.length) {
-			writeConsoleSysMsg(SysLogLevel.Full, 
+			writeConsoleSysMsg(EnumSysLogLevel.Full, 
 						"Cannot invoke ",
 						m.method.getName(),
 						", expected ",
@@ -207,7 +215,7 @@ public class MyClient {
 			// Cast argument to function parameter
 			var castType = castArgument(pType, args[argIdx++]);
 			if (castType == null) {
-				writeConsoleErrMsg(SysLogLevel.Full, "Cannot cast param ", p.getName(), " of type ", pType);
+				writeConsoleErrMsg(EnumSysLogLevel.Full, "Cannot cast param ", p.getName(), " of type ", pType);
 			} else {
 				castParams.add(castType);
 			}
@@ -216,14 +224,14 @@ public class MyClient {
 		}
 
 		try {
-			writeConsoleSysMsg(SysLogLevel.Full, new StringBuilder("Invoking: ").append(m.method.getName()));
+			writeConsoleSysMsg(EnumSysLogLevel.Full, new StringBuilder("Invoking: ").append(m.method.getName()));
 			// If we have some arguments, then print them out if running with SysLogLevel.Full verbosity.
 			if (sb.length() > 0)
-				writeConsoleSysMsg(SysLogLevel.Full, sb);
+				writeConsoleSysMsg(EnumSysLogLevel.Full, sb);
 			// Invoke the method with params
 			m.method.invoke(this, castParams.toArray());
 		} catch (Exception ex) {
-			writeConsoleSysMsg(SysLogLevel.Full,
+			writeConsoleSysMsg(EnumSysLogLevel.Full,
 						"Failed to invoke ",
 						m.method.getName(),
 						"\n",
@@ -294,14 +302,14 @@ public class MyClient {
 	 * (Avail), the message right after the DATA message will be ‘.’
 	 */
 	@ClientCommand(cmd = "GETS")
-	public void C_GetServerState(GETS_State state, String type, Applicance sys) {
+	public void C_GetServerState(EnumGETSState state, String type, Applicance sys) {
 		var sb = new StringBuilder("GETS ").append(state.getLabel());
 		switch (state) {
 			case All:
 				break;
 			case Type:
 				if (type == null) {
-					writeConsoleSysMsg(SysLogLevel.Full, "GETS requires param type to be specified with flag Type");
+					writeConsoleSysMsg(EnumSysLogLevel.Full, "GETS requires param type to be specified with flag Type");
 					return;
 				}
 				sb.append(type);
@@ -309,7 +317,7 @@ public class MyClient {
 			case Capable:
 			case Available:
 				if (sys == null) {
-					writeConsoleSysMsg(SysLogLevel.Full, "GETS requires param sys to be specified with flag ", state.getLabel());
+					writeConsoleSysMsg(EnumSysLogLevel.Full, "GETS requires param sys to be specified with flag ", state.getLabel());
 					return;
 				}
 				sb.append(sys.toString());
@@ -373,12 +381,12 @@ public class MyClient {
 	 * @param i         Used when Index is specified.
 	 */
 	@ClientCommand(cmd = "LSTQ")
-	public void C_GetJobInfo(String queueName, ListType type, Integer i) {
+	public void C_GetJobInfo(String queueName, EnumListType type, Integer i) {
 		var sb = new StringBuilder("LSTQ ").append(queueName).append(' ');
 
-		if (type == ListType.Index) {
+		if (type == EnumListType.Index) {
 			if (i == null) {
-				writeConsoleErrMsg(SysLogLevel.Full, "Cannot get job info for queue: ", queueName, " with Index type when i is null");
+				writeConsoleErrMsg(EnumSysLogLevel.Full, "Cannot get job info for queue: ", queueName, " with Index type when i is null");
 				return;
 			}
 
@@ -530,7 +538,7 @@ public class MyClient {
 	@ClientCommand(cmd = "QUIT")
 	public void C_Quit() {
 		write("QUIT");
-		// runClient = false;
+		quit = true;
 	}
 
 	@ClientCommand(cmd = "OK")
@@ -550,16 +558,16 @@ public class MyClient {
 	@ServerCommand(cmd = "JOBN")
 	public void S_JOBN(int submitTime, int jobId, int estRuntime, int core, int memory, int disk) {
 		// Setup job object
-		recentJob = new Job();
-		recentJob.submitTime 	= submitTime;
-		recentJob.jobId 		= jobId;
-		recentJob.estRunTime 	= estRuntime;
-		recentJob.cores 		= core;
-		recentJob.memory 		= memory;
-		recentJob.disk 			= disk;
-		recentJob.state 		= EnumJobState.Waiting;
+		var j = new Job();
+		j.submitTime 	= submitTime;
+		j.jobId 		= jobId;
+		j.estRunTime 	= estRuntime;
+		j.cores 		= core;
+		j.memory 		= memory;
+		j.disk 			= disk;
+		j.state = EnumJobState.Waiting;
 
-		jobReceived = true;
+		incomingJobs.enqueue(j);
 	}
 
 	@ServerCommand(cmd = "JCPL")
@@ -596,7 +604,7 @@ public class MyClient {
 	}
 
 	@ServerCommand(cmd = "DATA")
-	public void S_Data(int numberOfRecords, int recordLength) {
+	public void S_Data(int numberOfRecords, int maxRecordLength) {
 		C_OK(); // Ack cmd
 
 		// Read in numberOfRecords that follows the acknowledgment.
@@ -611,7 +619,7 @@ public class MyClient {
 
 			C_OK(); // Ack data
 		} catch (Exception ex) {
-			writeConsoleSysMsg(SysLogLevel.Full, ex.getMessage());
+			writeConsoleSysMsg(EnumSysLogLevel.Full, ex.getMessage());
 		}
 	}
 
@@ -635,7 +643,7 @@ public class MyClient {
 
 	@ServerCommand(cmd = "ERR")
 	public void S_Error(String message) {
-		writeConsoleErrMsg(SysLogLevel.Info, ANSI_RED, "ERR: ", message);
+		writeConsoleErrMsg(EnumSysLogLevel.Info, ANSI_RED, "ERR: ", message);
 	}
 		
 /***************************************************************************************************
@@ -665,12 +673,12 @@ public class MyClient {
 		try {
 			outputStream.write(sb.append("\n").toString().getBytes());
 			outputStream.flush();
-			if (SysLogLevel.Info.isLowerOrEqualTo(sysMessageLogLevel))
+			if (EnumSysLogLevel.Info.isLowerOrEqualTo(sysMessageLogLevel))
 				sb.insert(0, "TXD: ").insert(0, ANSI_GREEN).deleteCharAt(sb.length() - 1).append(ANSI_WHITE);
-				writeConsoleMsg(SysLogLevel.Info, sb);
+				writeConsoleMsg(EnumSysLogLevel.Info, sb);
 			} catch (Exception ex) {
 			
-			writeConsoleErrMsg(SysLogLevel.Full, ex.getMessage());
+			writeConsoleErrMsg(EnumSysLogLevel.Full, ex.getMessage());
 		}
 	}
 
@@ -688,11 +696,11 @@ public class MyClient {
 		try {
 			var response = inputStream.readLine();
 			
-			writeConsoleMsg(SysLogLevel.Info, new StringBuilder(response).insert(0, "RXD: "));
+			writeConsoleMsg(EnumSysLogLevel.Info, new StringBuilder(response).insert(0, "RXD: "));
 
 			return response;
 		} catch (Exception ex) {
-			writeConsoleErrMsg(SysLogLevel.Full, ex.getMessage());
+			writeConsoleErrMsg(EnumSysLogLevel.Full, ex.getMessage());
 			return "";
 		}
 	}
@@ -728,7 +736,7 @@ public class MyClient {
 
 			return instance;
 		} catch (Exception ex) {
-			writeConsoleErrMsg(SysLogLevel.Full, ex.getMessage());
+			writeConsoleErrMsg(EnumSysLogLevel.Full, ex.getMessage());
 		}
 
 		return null;
@@ -755,28 +763,28 @@ public class MyClient {
 		}
 	}
 
-	private void writeConsoleSysMsg(SysLogLevel level, Object... params) {
+	private void writeConsoleSysMsg(EnumSysLogLevel level, Object... params) {
 		writeConsoleMsg(level, paramsArrayToStringBuilder(params).insert(0, "SYS: ").insert(0, ANSI_YELLOW).append(ANSI_WHITE));
 	}
 
-	private void writeConsoleSysMsg(SysLogLevel level, StringBuilder sb) {
+	private void writeConsoleSysMsg(EnumSysLogLevel level, StringBuilder sb) {
 		writeConsoleMsg(level, sb.insert(0, "SYS: ").insert(0, ANSI_YELLOW).append(ANSI_WHITE));
 	}
 
-	private void writeConsoleErrMsg(SysLogLevel level, StringBuilder sb) {
+	private void writeConsoleErrMsg(EnumSysLogLevel level, StringBuilder sb) {
 		writeConsoleMsg(level, sb.insert(0, "ERR: ").insert(0, ANSI_RED).append(ANSI_WHITE));
 	}
 
-	private void writeConsoleErrMsg(SysLogLevel level, String s) {
+	private void writeConsoleErrMsg(EnumSysLogLevel level, String s) {
 		writeConsoleMsg(level, new StringBuilder(s).insert(0, "ERR: ").insert(0, ANSI_RED).append(ANSI_WHITE));
 	}
 
-	private void writeConsoleErrMsg(SysLogLevel level, Object... args) {
+	private void writeConsoleErrMsg(EnumSysLogLevel level, Object... args) {
 		var sb = paramsArrayToStringBuilder(args);
 		writeConsoleMsg(level, sb.insert(0, "ERR: ").insert(0, ANSI_RED).append(ANSI_WHITE));
 	}
 
-	private void writeConsoleMsg(SysLogLevel level, StringBuilder sb) {
+	private void writeConsoleMsg(EnumSysLogLevel level, StringBuilder sb) {
 		if (level.isLowerOrEqualTo(sysMessageLogLevel))
 			System.out.println("+ " + sb);
 	}
@@ -821,18 +829,6 @@ public class MyClient {
 	String cmd();
 }
 
-class JobState extends Applicance {
-	public int id;
-	public int state;
-	public int submitTime;
-	public int startTime;
-	public int estRunTime;
-
-	public EnumJobState getStateEnum() {
-		return EnumJobState.getJobState(state);
-	}
-}
-
 class Job extends Applicance {
 	public int jobId;
 	public int queueId;
@@ -868,16 +864,6 @@ class ServerState {
 	public ServerState() { }
 }
 
-class Server extends Applicance {
-	public String type;
-	public int limit;
-	public String state;
-	public int bootupTime;
-	public float hourlyRate;
-
-	public Server() { }
-}
-
 class Applicance {
 	public int cores;
 	public int memory;
@@ -897,7 +883,7 @@ class Applicance {
 	}
 }
 
-enum GETS_State {
+enum EnumGETSState {
 	All("All"),
 	Type("Type"),
 	Capable("Capable"),
@@ -905,7 +891,7 @@ enum GETS_State {
 
 	private String cmdLbl;
 
-	private GETS_State(String label) {
+	private EnumGETSState(String label) {
 		this.cmdLbl = label;
 	}
 
@@ -914,7 +900,7 @@ enum GETS_State {
 	}
 }
 
-enum ListType {
+enum EnumListType {
 	All("*"),
 	Number("#"),
 	Dollar("$"),
@@ -922,7 +908,7 @@ enum ListType {
 
 	private String cmd;
 
-	private ListType(String command) {
+	private EnumListType(String command) {
 		this.cmd = command;
 	}
 
@@ -963,14 +949,14 @@ enum EnumJobState {
 /**
  * Utility enumeration for managing the verbosity of client terminal output.
  */
-enum SysLogLevel {
+enum EnumSysLogLevel {
 	None(0),
 	Info(5),
 	Full(10);
 
 	private int level;
 
-	private SysLogLevel(int lvl) {
+	private EnumSysLogLevel(int lvl) {
 		this.level = lvl;
 	}
 
@@ -978,7 +964,7 @@ enum SysLogLevel {
 		return level;
 	}
 
-	public boolean isLowerOrEqualTo(SysLogLevel other) {
+	public boolean isLowerOrEqualTo(EnumSysLogLevel other) {
 		return this.level <= other.level;
 	}
 }
@@ -997,37 +983,27 @@ class MethodCallData {
 }
 
 class ServerList {
-	public final List<Server_ABC> servers;
+	public final List<ComputeServer> servers;
 	public final int order;
 
-	public ServerList(int order, List<Server_ABC> svrs) {
+	public ServerList(int order, List<ComputeServer> svrs) {
 		this.order = order;
 		this.servers = svrs;
 	}
 
-	public ServerList(int order, Server_ABC firstServer) {
+	public ServerList(int order, ComputeServer firstServer) {
 		this.order = order;
 		this.servers = new ArrayList<>(20);
 		servers.add(firstServer);
 	}
 }
 
-/*
- 
- * 		Server Dictionary
- * 			Servers[] server count, ID is index
- * 				Server info
- * 				Queue
- * 					Job
- * 
- */
-
-class Server_ABC {
+class ComputeServer {
 	public final ServerState server;
 	public final JobQueue jobs = new JobQueue();
 	public final JobQueue completedJobs = new JobQueue();
 
-	public Server_ABC(ServerState svr) {
+	public ComputeServer(ServerState svr) {
 		server = svr;
 	}
 }
@@ -1048,7 +1024,7 @@ class JobQueue extends LinkedList<Job> {
 }
 
 interface IScheduler {
-	void run(Job newJob);
+	void run();
 }
 
 abstract class Scheduler implements IScheduler {
@@ -1079,6 +1055,10 @@ class RoundRobinScheduler extends Scheduler {
 	private void findFirstLargestServer() {
 		int cpuMax = Integer.MIN_VALUE;
 
+		// Sort the server types according to the order they were received.
+		// We need to do this because larger compute nodes are sent later,
+		// and in situations where two types contain the same number of cores
+		// there is the chance that they will not be in order within the HashMap
 		var sortedList = new ArrayList<>(client.getServerInfo().entrySet());
 		Collections.sort(sortedList, (o1, o2) -> {
 			var first = (Map.Entry<String, ServerList>) o1;
@@ -1105,9 +1085,12 @@ class RoundRobinScheduler extends Scheduler {
 	}
 
 	@Override
-	public void run(Job newJob) {
-		client.C_Schedule(newJob, largestServer.type, serverScheduleIndex++ % largestServerCount);
+	public void run() {
+		var job = client.incomingJobs.dequeue();
+		if (job != null) {
+			client.C_Schedule(job, largestServer.type, serverScheduleIndex++ % largestServerCount);
 
-		client.handleNextMessage(); // Ok message.
+			client.handleNextMessage(); // Ok message.
+		}
 	}
 }
