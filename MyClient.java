@@ -83,19 +83,6 @@ public class MyClient {
 			// Run the scheduler with most recent job.
 			scheduler.run();
 		}
-
-		// // If a new job has been received
-		// if (recentJob != null || jobCompleted) {
-			
-			
-		// 	recentJob = null;
-
-		// 	// If a job has been completed (rxd JCPL) then we dont have any response so just go back to REDY
-		// 	if (jobCompleted)
-		// 		jobCompleted = false;
-		// } else { // We are quitting, so read that in,
-		// 	handleNextMessage(); // Quit
-		// }
 	}
 
 	public void loadServerInfo() {
@@ -153,7 +140,9 @@ public class MyClient {
 
 			if (cmdat != null) {
 				commandMap.put(cmdat.cmd(), new MethodCallData(m, m.getParameters()));
+				
 				writeConsoleSysMsg(EnumSysLogLevel.Full, "Mapped command ", cmdat.cmd());
+
 				count++;
 			}
 		}
@@ -225,9 +214,11 @@ public class MyClient {
 
 		try {
 			writeConsoleSysMsg(EnumSysLogLevel.Full, new StringBuilder("Invoking: ").append(m.method.getName()));
+			
 			// If we have some arguments, then print them out if running with SysLogLevel.Full verbosity.
 			if (sb.length() > 0)
 				writeConsoleSysMsg(EnumSysLogLevel.Full, sb);
+
 			// Invoke the method with params
 			m.method.invoke(this, castParams.toArray());
 		} catch (Exception ex) {
@@ -673,6 +664,7 @@ public class MyClient {
 		try {
 			outputStream.write(sb.append("\n").toString().getBytes());
 			outputStream.flush();
+
 			if (EnumSysLogLevel.Info.isLowerOrEqualTo(sysMessageLogLevel))
 				sb.insert(0, "TXD: ").insert(0, ANSI_GREEN).deleteCharAt(sb.length() - 1).append(ANSI_WHITE);
 				writeConsoleMsg(EnumSysLogLevel.Info, sb);
@@ -685,10 +677,12 @@ public class MyClient {
 	private void write(Object... args) {
 		// Initialise a Stringbuilder with starting size of 64
 		StringBuilder sb = new StringBuilder(64).append(args[0]);
+
 		for (int i = 1; i < args.length; i++) {
 			sb.append(' ').append(args[i]);
 
 		}
+
 		write(sb);
 	}
 
@@ -707,9 +701,11 @@ public class MyClient {
 
 	private Integer readInt() {
 		var res = read();
+		
 		if (res.length() > 0) {
 			return Integer.valueOf(res);
 		}
+
 		return null;
 	}
 
@@ -829,6 +825,14 @@ public class MyClient {
 	String cmd();
 }
 
+/*
+ * Each of the following types are likely to be used by the read(Class<T>) function.
+ * This function will read in responses from a DATA record block and cast the arguments
+ * into the class instance fields.
+ * It is important that each of the following types have their fields in the same order 
+ * a data message is going to provide them so that everything is correctly algned and
+ * injected.
+ */
 class Job extends Applicance {
 	public int jobId;
 	public int queueId;
@@ -1063,17 +1067,28 @@ class RoundRobinScheduler extends Scheduler {
 		Collections.sort(sortedList, (o1, o2) -> {
 			var first = (Map.Entry<String, ServerList>) o1;
 			var second = (Map.Entry<String, ServerList>) o2;
+
 			if (first.getValue().order > second.getValue().order)
 				return 1;
+
 			if (first.getValue().order < second.getValue().order)
 				return -1;
+
 			return 0;
 		});
 
+		/*
+		 * Need to find the first server type with the largest number of cores.
+		 * Iterate over the local cached server data, if we find a server with more cpu resources
+		 * than our previous largestServer record AND the types do not match then set largestServer
+		 * to the new candidate.
+		 */
 		for (var set : sortedList) {
 			var serverTypeList = set.getValue().servers;
+
 			if (serverTypeList.size() > 0) {
 				var firstServer = serverTypeList.get(0).server;
+
 				if (largestServer == null
 						|| firstServer.core > cpuMax && !firstServer.type.equals(largestServer.type)) {
 					cpuMax = firstServer.core;
