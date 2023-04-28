@@ -2,6 +2,9 @@ import java.io.*;
 import java.net.*;
 import java.lang.reflect.*;
 import java.util.*;
+
+import javax.naming.NameClassPair;
+
 import java.lang.annotation.*;
 
 public class MyClient {
@@ -32,7 +35,7 @@ public class MyClient {
 
 	private Class<?> dataRecordType = null;
 
-	private Object[] response_data = null;
+	public Object[] response_data = null;
 
 	private boolean jobCompleted = false;
 
@@ -56,7 +59,8 @@ public class MyClient {
 		}
 
 		if (runClient) {
-			scheduler = new RoundRobinScheduler();
+			// scheduler = new RoundRobinScheduler();
+			scheduler = new Part2Scheduler();
 
 			C_AuthHandshake();
 
@@ -65,7 +69,7 @@ public class MyClient {
 				run();
 			}
 		}
-			
+
 		closeSocket();
 	}
 
@@ -76,7 +80,7 @@ public class MyClient {
 
 		if (!scheduler.initialised())
 			scheduler.initialise(this);
-		
+
 		if (quit)
 			handleNextMessage();
 		else {
@@ -87,14 +91,15 @@ public class MyClient {
 
 	public void loadServerInfo() {
 		C_GetServerState(EnumGETSState.All, null, null);
-		
+
 		handleNextMessage(); // DATA
 
-		// Assume there are at least 3 servers per type, 
-		// That way we don't allocate too much or too little space causing reallocations and copies.
+		// Assume there are at least 3 servers per type,
+		// That way we don't allocate too much or too little space causing reallocations
+		// and copies.
 		servers = new HashMap<String, ServerList>(response_data.length / 3);
 
-		var svrs = (ServerState[])response_data;
+		var svrs = (ServerState[]) response_data;
 
 		int order = 0;
 		for (ServerState serverState : svrs) {
@@ -103,11 +108,13 @@ public class MyClient {
 			var s = servers.get(serverState.type);
 			if (s != null) {
 				s.servers.add(new ComputeServer(serverState));
-				//servers.put(serverState.type, new ServerList(0, new Server_ABC(serverState)));
+				// servers.put(serverState.type, new ServerList(0, new
+				// Server_ABC(serverState)));
 			} else {
 				servers.put(serverState.type, new ServerList(order, new ComputeServer(serverState)));
 				order++;
-				//servers.put(serverState.type, new ArrayList<Server_ABC>(List.of(new Server_ABC(serverState))));
+				// servers.put(serverState.type, new ArrayList<Server_ABC>(List.of(new
+				// Server_ABC(serverState))));
 			}
 		}
 
@@ -115,18 +122,20 @@ public class MyClient {
 	}
 
 	/**
-	 * Used to cache the expected object type that will be read in by the next DATA message
+	 * Used to cache the expected object type that will be read in by the next DATA
+	 * message
+	 * 
 	 * @param type
 	 */
 	public void setDataRecordType(Class<?> type) {
 		this.dataRecordType = type;
 	}
 
-/***************************************************************************************************
- * 
- * 								Command Discover & Execution
- * 
- **************************************************************************************************/
+	/***************************************************************************************************
+	 * 
+	 * Command Discover & Execution
+	 * 
+	 **************************************************************************************************/
 
 	/**
 	 * Creates a map of all methods annotated with the Command annotation type.
@@ -140,14 +149,15 @@ public class MyClient {
 
 			if (cmdat != null) {
 				commandMap.put(cmdat.cmd(), new MethodCallData(m, m.getParameters()));
-				
+
 				writeConsoleSysMsg(EnumSysLogLevel.Full, "Mapped command ", cmdat.cmd());
 
 				count++;
 			}
 		}
 
-		writeConsoleSysMsg(EnumSysLogLevel.Info, new StringBuilder().append("Mapped ").append(count).append(" commands."));
+		writeConsoleSysMsg(EnumSysLogLevel.Info,
+				new StringBuilder().append("Mapped ").append(count).append(" commands."));
 	}
 
 	private void findAndExecuteCommand(String args) {
@@ -184,13 +194,13 @@ public class MyClient {
 	private void executeCommand(MethodCallData m, String[] args) {
 		// If we didnt receive enough params, print error and return.
 		if (args.length != m.parameters.length) {
-			writeConsoleSysMsg(EnumSysLogLevel.Full, 
-						"Cannot invoke ",
-						m.method.getName(),
-						", expected ",
-						m.parameters.length,
-						" parameters, got ",
-						args.length);
+			writeConsoleSysMsg(EnumSysLogLevel.Full,
+					"Cannot invoke ",
+					m.method.getName(),
+					", expected ",
+					m.parameters.length,
+					" parameters, got ",
+					args.length);
 			return;
 		}
 
@@ -214,8 +224,9 @@ public class MyClient {
 
 		try {
 			writeConsoleSysMsg(EnumSysLogLevel.Full, new StringBuilder("Invoking: ").append(m.method.getName()));
-			
-			// If we have some arguments, then print them out if running with SysLogLevel.Full verbosity.
+
+			// If we have some arguments, then print them out if running with
+			// SysLogLevel.Full verbosity.
 			if (sb.length() > 0)
 				writeConsoleSysMsg(EnumSysLogLevel.Full, sb);
 
@@ -223,10 +234,10 @@ public class MyClient {
 			m.method.invoke(this, castParams.toArray());
 		} catch (Exception ex) {
 			writeConsoleSysMsg(EnumSysLogLevel.Full,
-						"Failed to invoke ",
-						m.method.getName(),
-						"\n",
-						ex.getMessage());
+					"Failed to invoke ",
+					m.method.getName(),
+					"\n",
+					ex.getMessage());
 		}
 	}
 
@@ -246,11 +257,11 @@ public class MyClient {
 		return null;
 	}
 
-/***************************************************************************************************
- * 
- * 											Client Messages
- * 
- **************************************************************************************************/
+	/***************************************************************************************************
+	 * 
+	 * Client Messages
+	 * 
+	 **************************************************************************************************/
 
 	public void C_AuthHandshake() {
 		// Auth handshake
@@ -308,7 +319,8 @@ public class MyClient {
 			case Capable:
 			case Available:
 				if (sys == null) {
-					writeConsoleSysMsg(EnumSysLogLevel.Full, "GETS requires param sys to be specified with flag ", state.getLabel());
+					writeConsoleSysMsg(EnumSysLogLevel.Full, "GETS requires param sys to be specified with flag ",
+							state.getLabel());
 					return;
 				}
 				sb.append(sys.toString());
@@ -326,16 +338,17 @@ public class MyClient {
 	@ClientCommand(cmd = "SCHD")
 	public void C_Schedule(Job job, String serverType, int serverId) {
 		var svr = servers.get(serverType).servers.get(serverId);
-		
-		// If the server currently has no jobs in its queue, we will default the job state to running.
-		if (svr.jobs.isEmpty()) 
+
+		// If the server currently has no jobs in its queue, we will default the job
+		// state to running.
+		if (svr.jobs.isEmpty())
 			job.state = EnumJobState.Running;
 		else // Otherwise the state will be submitted.
 			job.state = EnumJobState.Submitted;
 
 		svr.jobs.enqueue(job);
-		
-		write("SCHD", job.jobId, serverType, serverId);	
+
+		write("SCHD", job.jobId, serverType, serverId);
 	}
 
 	/**
@@ -377,7 +390,8 @@ public class MyClient {
 
 		if (type == EnumListType.Index) {
 			if (i == null) {
-				writeConsoleErrMsg(EnumSysLogLevel.Full, "Cannot get job info for queue: ", queueName, " with Index type when i is null");
+				writeConsoleErrMsg(EnumSysLogLevel.Full, "Cannot get job info for queue: ", queueName,
+						" with Index type when i is null");
 				return;
 			}
 
@@ -537,11 +551,11 @@ public class MyClient {
 		write("OK");
 	}
 
-/***************************************************************************************************
- * 
- * 											Server Messages
- * 
- **************************************************************************************************/
+	/***************************************************************************************************
+	 * 
+	 * Server Messages
+	 * 
+	 **************************************************************************************************/
 
 	/**
 	 * JOBN - Send a normal job
@@ -563,13 +577,14 @@ public class MyClient {
 
 	@ServerCommand(cmd = "JCPL")
 	public void S_RecentlyCompletedJobInfo(int endTime, int jobId, String serverType, int serverId) {
-		// Update local system state - dequeue the job from the servers working queue and add to completed list.
+		// Update local system state - dequeue the job from the servers working queue
+		// and add to completed list.
 		var svr = servers.get(serverType).servers.get(serverId);
 		var j = svr.jobs.dequeue();
-		
+
 		j.state = EnumJobState.Completed;
 		j.endTime = endTime;
-		
+
 		svr.completedJobs.enqueue(j);
 
 		// Set the next job to running.
@@ -598,28 +613,32 @@ public class MyClient {
 	public void S_Data(int numberOfRecords, int maxRecordLength) {
 		C_OK(); // Ack cmd
 
-		// Read in numberOfRecords that follows the acknowledgment.
-		try {
-			var array = (Object[]) Array.newInstance(dataRecordType, numberOfRecords);
+		if (numberOfRecords > 0) {
+			// Read in numberOfRecords that follows the acknowledgment.
+			try {
+				var array = (Object[]) Array.newInstance(dataRecordType, numberOfRecords);
 
-			for (int i = 0; i < numberOfRecords; i++) {
-				array[i] = read(dataRecordType);
+				for (int i = 0; i < numberOfRecords; i++) {
+					array[i] = read(dataRecordType);
+				}
+
+				response_data = array;
+
+				C_OK(); // Ack data
+			} catch (Exception ex) {
+				writeConsoleSysMsg(EnumSysLogLevel.Full, ex.getMessage());
 			}
-
-			response_data = array;
-
-			C_OK(); // Ack data
-		} catch (Exception ex) {
-			writeConsoleSysMsg(EnumSysLogLevel.Full, ex.getMessage());
 		}
 	}
 
 	@ServerCommand(cmd = "OK")
-	public void S_OK() { }
-	
+	public void S_OK() {
+	}
+
 	@ServerCommand(cmd = "QUIT")
 	public void S_QUIT() {
-		//Upon receiving a QUIT confirmation from the server, stop the client from looping.
+		// Upon receiving a QUIT confirmation from the server, stop the client from
+		// looping.
 		runClient = false;
 	}
 
@@ -630,18 +649,19 @@ public class MyClient {
 	}
 
 	@ServerCommand(cmd = ".")
-	public void S_Dot() { }
+	public void S_Dot() {
+	}
 
 	@ServerCommand(cmd = "ERR")
 	public void S_Error(String message) {
 		writeConsoleErrMsg(EnumSysLogLevel.Info, ANSI_RED, "ERR: ", message);
 	}
-		
-/***************************************************************************************************
- * 
- * 										Socket Utilities
- * 
- **************************************************************************************************/
+
+	/***************************************************************************************************
+	 * 
+	 * Socket Utilities
+	 * 
+	 **************************************************************************************************/
 
 	private void initSocket() throws UnknownHostException, IOException {
 		socket = new Socket("localhost", 50000);
@@ -667,9 +687,9 @@ public class MyClient {
 
 			if (EnumSysLogLevel.Info.isLowerOrEqualTo(sysMessageLogLevel))
 				sb.insert(0, "TXD: ").insert(0, ANSI_GREEN).deleteCharAt(sb.length() - 1).append(ANSI_WHITE);
-				writeConsoleMsg(EnumSysLogLevel.Info, sb);
-			} catch (Exception ex) {
-			
+			writeConsoleMsg(EnumSysLogLevel.Info, sb);
+		} catch (Exception ex) {
+
 			writeConsoleErrMsg(EnumSysLogLevel.Full, ex.getMessage());
 		}
 	}
@@ -689,7 +709,7 @@ public class MyClient {
 	private String read() {
 		try {
 			var response = inputStream.readLine();
-			
+
 			writeConsoleMsg(EnumSysLogLevel.Info, new StringBuilder(response).insert(0, "RXD: "));
 
 			return response;
@@ -701,7 +721,7 @@ public class MyClient {
 
 	private Integer readInt() {
 		var res = read();
-		
+
 		if (res.length() > 0) {
 			return Integer.valueOf(res);
 		}
@@ -714,16 +734,20 @@ public class MyClient {
 		int responseIdx = 0;
 
 		try {
-			// Instantiate a new intance of the desired type. Because Java has god-aweful generics
+			// Instantiate a new intance of the desired type. Because Java has god-aweful
+			// generics
 			// we need to recast that instance as the desired type afterwards..
-			// All objects will require a default constructor with no parameters (must be manually
-			// specified in type), thus we will always use the first constructor for instantiation.
+			// All objects will require a default constructor with no parameters (must be
+			// manually
+			// specified in type), thus we will always use the first constructor for
+			// instantiation.
 			T instance = asType.cast(asType.getConstructors()[0].newInstance());
 
 			for (var member : instance.getClass().getFields()) {
 				// Break loop if there are no more params.
 				// In some cases there will be objects that can store more values should they be
-				// provided by the incoming data. If not we will break early and not set those fields.
+				// provided by the incoming data. If not we will break early and not set those
+				// fields.
 				if (responseIdx >= response.length)
 					break;
 
@@ -738,11 +762,11 @@ public class MyClient {
 		return null;
 	}
 
-/***************************************************************************************************
- * 
- * 												Utilities
- * 
- **************************************************************************************************/
+	/***************************************************************************************************
+	 * 
+	 * Utilities
+	 * 
+	 **************************************************************************************************/
 
 	private StringBuilder paramsArrayToStringBuilder(Object... params) {
 		if (params.length == 1)
@@ -760,7 +784,8 @@ public class MyClient {
 	}
 
 	private void writeConsoleSysMsg(EnumSysLogLevel level, Object... params) {
-		writeConsoleMsg(level, paramsArrayToStringBuilder(params).insert(0, "SYS: ").insert(0, ANSI_YELLOW).append(ANSI_WHITE));
+		writeConsoleMsg(level,
+				paramsArrayToStringBuilder(params).insert(0, "SYS: ").insert(0, ANSI_YELLOW).append(ANSI_WHITE));
 	}
 
 	private void writeConsoleSysMsg(EnumSysLogLevel level, StringBuilder sb) {
@@ -785,7 +810,6 @@ public class MyClient {
 			System.out.println("+ " + sb);
 	}
 
-
 	public Map<String, ServerList> getServerInfo() {
 		return this.servers;
 	}
@@ -793,12 +817,12 @@ public class MyClient {
 
 /***************************************************************************************************
  * 
- * 												TYPES
+ * TYPES
  * 
  **************************************************************************************************/
 
 /**
- * ServerCommand annotation type. This is used to mark methods which should 
+ * ServerCommand annotation type. This is used to mark methods which should
  * be interpreted as commands originating from the server.
  * The cmd field should be the expected command string from the server,
  * i.e. 'JOBN', 'JCPL', etc
@@ -812,7 +836,7 @@ public class MyClient {
 }
 
 /**
- * ClientCommand annotation type. This is used to mark methods which should 
+ * ClientCommand annotation type. This is used to mark methods which should
  * be interpreted as commands originating from the Client.
  * The cmd field should be the expected command string from the Client,
  * i.e. 'SCHD', 'AUTH', etc
@@ -826,11 +850,15 @@ public class MyClient {
 }
 
 /*
- * Each of the following types are likely to be used by the read(Class<T>) function.
- * This function will read in responses from a DATA record block and cast the arguments
+ * Each of the following types are likely to be used by the read(Class<T>)
+ * function.
+ * This function will read in responses from a DATA record block and cast the
+ * arguments
  * into the class instance fields.
- * It is important that each of the following types have their fields in the same order 
- * a data message is going to provide them so that everything is correctly algned and
+ * It is important that each of the following types have their fields in the
+ * same order
+ * a data message is going to provide them so that everything is correctly
+ * algned and
  * injected.
  */
 class Job extends Applicance {
@@ -843,7 +871,8 @@ class Job extends Applicance {
 	public EnumJobState state;
 	public int endTime;
 
-	public Job() { }
+	public Job() {
+	}
 }
 
 class ServerState {
@@ -865,7 +894,8 @@ class ServerState {
 	public int meanAbsDeviationOfFailure;
 	public int lastServerStartTime;
 
-	public ServerState() { }
+	public ServerState() {
+	}
 }
 
 class Applicance {
@@ -873,7 +903,8 @@ class Applicance {
 	public int memory;
 	public int disk;
 
-	public Applicance() { }
+	public Applicance() {
+	}
 
 	@Override
 	public String toString() {
@@ -1079,8 +1110,10 @@ class RoundRobinScheduler extends Scheduler {
 
 		/*
 		 * Need to find the first server type with the largest number of cores.
-		 * Iterate over the local cached server data, if we find a server with more cpu resources
-		 * than our previous largestServer record AND the types do not match then set largestServer
+		 * Iterate over the local cached server data, if we find a server with more cpu
+		 * resources
+		 * than our previous largestServer record AND the types do not match then set
+		 * largestServer
 		 * to the new candidate.
 		 */
 		for (var set : sortedList) {
@@ -1106,6 +1139,56 @@ class RoundRobinScheduler extends Scheduler {
 			client.C_Schedule(job, largestServer.type, serverScheduleIndex++ % largestServerCount);
 
 			client.handleNextMessage(); // Ok message.
+		}
+	}
+
+}
+
+class Part2Scheduler extends Scheduler {
+
+	public void initialise(MyClient c) {
+		super.initialise(c);
+		client.loadServerInfo();
+	}
+
+	public void run() {
+		final Job dequeue = this.client.incomingJobs.dequeue();
+		if (dequeue != null) {
+			this.client.C_GetServerState(EnumGETSState.Available, (String) null, (Applicance) dequeue);
+			this.client.handleNextMessage();
+			this.client.handleNextMessage();
+			if (this.client.response_data != null && this.client.response_data.length > 0) {
+				final ServerState serverState = (ServerState) this.client.response_data[0];
+				this.client.C_Schedule(dequeue, serverState.type, serverState.id);
+				this.client.handleNextMessage();
+				this.client.response_data = null;
+			} else {
+				this.client.C_GetServerState(EnumGETSState.Capable, (String) null, (Applicance) dequeue);
+				this.client.handleNextMessage();
+				this.client.handleNextMessage();
+				if (this.client.response_data != null && this.client.response_data.length > 0) {
+					final ServerState[] array = (ServerState[]) this.client.response_data;
+					ComputeServer computeServer = null;
+					for (final ServerState serverState2 : array) {
+						for (final ComputeServer computeServer2 : this.client.getServerInfo()
+								.get(serverState2.type).servers) {
+							if (computeServer2.server.id == serverState2.id) {
+								if (computeServer != null) {
+									if (computeServer.jobs.size() <= computeServer2.jobs.size()) {
+										continue;
+									}
+									computeServer = computeServer2;
+								} else {
+									computeServer = computeServer2;
+								}
+							}
+						}
+					}
+					this.client.C_Schedule(dequeue, computeServer.server.type, computeServer.server.id);
+					this.client.handleNextMessage();
+					this.client.response_data = null;
+				}
+			}
 		}
 	}
 }
