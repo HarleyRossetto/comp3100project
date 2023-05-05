@@ -22,7 +22,7 @@ public class MyClient {
 	public static final String ANSI_CYAN 	= "\u001B[36m";
 	public static final String ANSI_WHITE 	= "\u001B[37m";
 
-	private EnumSysLogLevel sysMessageLogLevel = EnumSysLogLevel.None;
+	private EnumSysLogLevel sysMessageLogLevel = EnumSysLogLevel.Info;
 
 	private Map<String, MethodCallData> commandMap = new HashMap<String, MethodCallData>();
 
@@ -92,7 +92,7 @@ public class MyClient {
 	public void loadServerInfo() {
 		C_GetServerState(EnumGETSState.All, null, null);
 
-		handleNextMessage(); // DATA
+		// handleNextMessage(); // DATA
 
 		// Assume there are at least 3 servers per type,
 		// That way we don't allocate too much or too little space causing reallocations
@@ -328,6 +328,8 @@ public class MyClient {
 		}
 		setDataRecordType(ServerState.class);
 		write(sb);
+
+		handleNextMessage(); // Data
 	}
 
 	/**
@@ -349,6 +351,8 @@ public class MyClient {
 		svr.jobs.enqueue(job);
 
 		write("SCHD", job.jobId, serverType, serverId);
+
+		handleNextMessage(); // Receive OK
 	}
 
 	/**
@@ -768,6 +772,22 @@ public class MyClient {
 	 * 
 	 **************************************************************************************************/
 
+	public <T> T[] getDataResponse() {
+		if (response_data != null && response_data.length > 0) {
+			return (T[]) response_data;
+		}
+		return null;
+	}
+
+	public ComputeServer getCachedServerInfo(ServerState state) {
+		for (final var cs : getServerInfo().get(state.type).servers) {
+			if (cs.server.id != state.id)
+				continue;
+			return cs;
+		}
+		return null;
+	}
+
 	private StringBuilder paramsArrayToStringBuilder(Object... params) {
 		if (params.length == 1)
 			return new StringBuilder(params[0].toString());
@@ -1152,41 +1172,42 @@ class Part2Scheduler extends Scheduler {
 	}
 
 	public void run() {
+		// Get the most recent job, and if not null, we will queue it.
 		final Job dequeue = this.client.incomingJobs.dequeue();
 		if (dequeue != null) {
+			// Find all available servers that can handle the job and schedule it on the first.
 			this.client.C_GetServerState(EnumGETSState.Available, (String) null, (Applicance) dequeue);
-			this.client.handleNextMessage();
-			this.client.handleNextMessage();
-			if (this.client.response_data != null && this.client.response_data.length > 0) {
-				final ServerState serverState = (ServerState) this.client.response_data[0];
+			this.client.handleNextMessage(); // OK
+			ServerState[] data = client.getDataResponse();
+			if (data != null) {
+				final ServerState serverState = data[0];
 				this.client.C_Schedule(dequeue, serverState.type, serverState.id);
-				this.client.handleNextMessage();
-				this.client.response_data = null;
-			} else {
+				// this.client.handleNextMessage(); // OK
+				this.client.response_data = null; // Clear response data.
+			}
+			// If there are not available servers, then look for all capable servers, and schedule it on 
+			// the one with the lease queued jobs 
+			else {
 				this.client.C_GetServerState(EnumGETSState.Capable, (String) null, (Applicance) dequeue);
-				this.client.handleNextMessage();
-				this.client.handleNextMessage();
-				if (this.client.response_data != null && this.client.response_data.length > 0) {
-					final ServerState[] array = (ServerState[]) this.client.response_data;
+				this.client.handleNextMessage(); // OK
+				data = client.getDataResponse();
+				if (data != null) {
 					ComputeServer computeServer = null;
-					for (final ServerState serverState2 : array) {
-						for (final ComputeServer computeServer2 : this.client.getServerInfo()
-								.get(serverState2.type).servers) {
-							if (computeServer2.server.id == serverState2.id) {
-								if (computeServer != null) {
-									if (computeServer.jobs.size() <= computeServer2.jobs.size()) {
-										continue;
-									}
-									computeServer = computeServer2;
-								} else {
-									computeServer = computeServer2;
-								}
-							}
+					// For each of the capable servers, look up in our local cache for the one with
+					// smallest job queue.
+					for (final ServerState serverState2 : data) {
+						final var serverCache = client.getCachedServerInfo(serverState2);
+						if (computeServer != null) {
+							if (computeServer.jobs.size() <= serverCache.jobs.size())
+								continue;
+							computeServer = serverCache;
+						} else {
+							computeServer = serverCache;
 						}
 					}
+					// Assign
 					this.client.C_Schedule(dequeue, computeServer.server.type, computeServer.server.id);
-					this.client.handleNextMessage();
-					this.client.response_data = null;
+					this.client.response_data = null; // Clear response data
 				}
 			}
 		}
