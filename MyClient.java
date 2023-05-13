@@ -22,7 +22,7 @@ public class MyClient {
 	public static final String ANSI_CYAN 	= "\u001B[36m";
 	public static final String ANSI_WHITE 	= "\u001B[37m";
 
-	private EnumSysLogLevel sysMessageLogLevel = EnumSysLogLevel.Info;
+	private EnumSysLogLevel sysMessageLogLevel = EnumSysLogLevel.Sys;
 
 	private Map<String, MethodCallData> commandMap = new HashMap<String, MethodCallData>();
 
@@ -47,6 +47,9 @@ public class MyClient {
 	private boolean quit = false;
 
 	public JobQueue incomingJobs = new JobQueue();
+
+	private Job recentlyCompletedJob = null;
+	private ComputeServer serverWithRecentlyCompletedJob = null;
 
 	public MyClient() {
 		mapCommands();
@@ -99,7 +102,7 @@ public class MyClient {
 		// and copies.
 		servers = new HashMap<String, ServerList>(response_data.length / 3);
 
-		var svrs = (ServerState[]) response_data;
+		ServerState[] svrs = getDataResponse();
 
 		int order = 0;
 		for (ServerState serverState : svrs) {
@@ -107,14 +110,10 @@ public class MyClient {
 			// otherwise add new type mapping and server to dictionary.
 			var s = servers.get(serverState.type);
 			if (s != null) {
-				s.servers.add(new ComputeServer(serverState));
-				// servers.put(serverState.type, new ServerList(0, new
-				// Server_ABC(serverState)));
+				s.servers.add(new ComputeServer(serverState, s));
 			} else {
-				servers.put(serverState.type, new ServerList(order, new ComputeServer(serverState)));
+				servers.put(serverState.type, new ServerList(order, new ComputeServer(serverState, s)));
 				order++;
-				// servers.put(serverState.type, new ArrayList<Server_ABC>(List.of(new
-				// Server_ABC(serverState))));
 			}
 		}
 
@@ -480,9 +479,8 @@ public class MyClient {
 	@ClientCommand(cmd = "LSTJ")
 	public void C_ListJobs(String serverType, int serverId) {
 		write("LSTJ", serverType, serverId);
-
-		// Now a data response..
-		// setDataRecordType(JobState.class);
+		setDataRecordType(JobStatus.class);
+		handleNextMessage(); // Data
 	}
 
 	/**
@@ -506,6 +504,35 @@ public class MyClient {
 	public void C_MigrateJob(int jobId, String srcServerType, int srcServerId, String targetServerType,
 			int targetServerId) {
 		write("MIGJ", jobId, srcServerType, srcServerId, targetServerType, targetServerId);
+
+		//find dest server and add job to queue
+		var svrLst = this.servers.get(targetServerType);
+		ComputeServer targetServer = null;
+		for (var svr : svrLst.servers) {
+			if (svr.server.id != targetServerId)
+				continue;
+			
+			targetServer = svr;
+			break;
+		}
+
+		// find source server and remove job from queue.
+		svrLst = this.servers.get(srcServerType);
+		for (int i = 0; i < svrLst.servers.size(); i++) {
+			var s = svrLst.servers.get(i);
+			if (s.server.id != srcServerId)
+				continue;
+
+			for (int j = 0; j < s.jobs.size(); j++) {
+				var job = s.jobs.get(j);
+				if (job.jobId == jobId) {
+					targetServer.jobs.add(job); // Add to destination server
+					s.jobs.remove(j); // Remove from source server
+					break;
+				}
+			}
+			break;
+		}
 
 		// RX OK
 		handleNextMessage();
@@ -596,6 +623,8 @@ public class MyClient {
 			svr.jobs.peek().state = EnumJobState.Running;
 
 		jobCompleted = true;
+		recentlyCompletedJob = j;
+		serverWithRecentlyCompletedJob = svr;
 	}
 
 	@ServerCommand(cmd = "RESF")
@@ -771,12 +800,61 @@ public class MyClient {
 	 * Utilities
 	 * 
 	 **************************************************************************************************/
+	
+	public Job getRecentlyCompletedJob() {
+		if (jobCompleted)
+			return recentlyCompletedJob;
+		else
+			return null;
+	}
+	 
+	public ComputeServer getServerWithMostRecentJobCompletion() {
+		if (jobCompleted) {
+			jobCompleted = false;
+			return serverWithRecentlyCompletedJob;
+		} else
+			return null;
+	}
+	 
+	/**
+	 * Find all servers of same type and smaller. (How to determine this??)
+	 * Order results by size of waiting queue.
+	 */
+	public List<ComputeServer> getSmallerServersOrderedByJobQueue(ComputeServer cs) {
+		final int WAITING_JOB_THRESHOLD = 1;
 
-	public <T> T[] getDataResponse() {
-		if (response_data != null && response_data.length > 0) {
-			return (T[]) response_data;
+		List<ComputeServer> results = new ArrayList<>();
+		for (var list : this.servers.values()) {
+			for (var svr : list.servers) {
+				if (list.order < cs.parentCollection.order && svr.jobs.size() > 1)
+					results.add(svr);
+				// if (list.order >= cs.parentCollection.order || svr.jobs.size() <= WAITING_JOB_THRESHOLD)
+					// continue;
+			}
+		}
+		if (results.size() > 0) {
+			 results.sort(
+					(a, b) -> {
+						if (a.jobs.size() > b.jobs.size())
+							return -1;
+						else if (a.jobs.size() < b.jobs.size())
+							return 1;
+						else
+							return 0;
+				}
+			);
+			return results;
 		}
 		return null;
+	}
+
+
+	public <T> T[] getDataResponse() {
+		if (response_data != null && response_data.length > 0 && response_data.getClass().getComponentType().isAssignableFrom(dataRecordType)) {
+			return (T[]) response_data;
+		} else {
+			return null;
+		}
 	}
 
 	public ComputeServer getCachedServerInfo(ServerState state) {
@@ -803,29 +881,29 @@ public class MyClient {
 		}
 	}
 
-	private void writeConsoleSysMsg(EnumSysLogLevel level, Object... params) {
+	public void writeConsoleSysMsg(EnumSysLogLevel level, Object... params) {
 		writeConsoleMsg(level,
 				paramsArrayToStringBuilder(params).insert(0, "SYS: ").insert(0, ANSI_YELLOW).append(ANSI_WHITE));
 	}
 
-	private void writeConsoleSysMsg(EnumSysLogLevel level, StringBuilder sb) {
+	public void writeConsoleSysMsg(EnumSysLogLevel level, StringBuilder sb) {
 		writeConsoleMsg(level, sb.insert(0, "SYS: ").insert(0, ANSI_YELLOW).append(ANSI_WHITE));
 	}
 
-	private void writeConsoleErrMsg(EnumSysLogLevel level, StringBuilder sb) {
+	public void writeConsoleErrMsg(EnumSysLogLevel level, StringBuilder sb) {
 		writeConsoleMsg(level, sb.insert(0, "ERR: ").insert(0, ANSI_RED).append(ANSI_WHITE));
 	}
 
-	private void writeConsoleErrMsg(EnumSysLogLevel level, String s) {
+	public void writeConsoleErrMsg(EnumSysLogLevel level, String s) {
 		writeConsoleMsg(level, new StringBuilder(s).insert(0, "ERR: ").insert(0, ANSI_RED).append(ANSI_WHITE));
 	}
 
-	private void writeConsoleErrMsg(EnumSysLogLevel level, Object... args) {
+	public void writeConsoleErrMsg(EnumSysLogLevel level, Object... args) {
 		var sb = paramsArrayToStringBuilder(args);
 		writeConsoleMsg(level, sb.insert(0, "ERR: ").insert(0, ANSI_RED).append(ANSI_WHITE));
 	}
 
-	private void writeConsoleMsg(EnumSysLogLevel level, StringBuilder sb) {
+	public void writeConsoleMsg(EnumSysLogLevel level, StringBuilder sb) {
 		if (level.isLowerOrEqualTo(sysMessageLogLevel))
 			System.out.println("+ " + sb);
 	}
@@ -892,6 +970,22 @@ class Job extends Applicance {
 	public int endTime;
 
 	public Job() {
+	}
+}
+
+//jobID jobState submitTime startTime estRunTime core memory disk.
+class JobStatus extends Applicance {
+	public int jobId;
+	public int state;
+	public int submitTime;
+	public int queuedTime;
+	public int estRunTime;
+
+	public JobStatus() {
+	}
+
+	public EnumJobState getState() {
+		return EnumJobState.getJobState(state);
 	}
 }
 
@@ -1006,6 +1100,7 @@ enum EnumJobState {
  */
 enum EnumSysLogLevel {
 	None(0),
+	Sys(3),
 	Info(5),
 	Full(10);
 
@@ -1048,6 +1143,7 @@ class ServerList {
 
 	public ServerList(int order, ComputeServer firstServer) {
 		this.order = order;
+		firstServer.setServerList(this);
 		this.servers = new ArrayList<>(20);
 		servers.add(firstServer);
 	}
@@ -1057,9 +1153,19 @@ class ComputeServer {
 	public final ServerState server;
 	public final JobQueue jobs = new JobQueue();
 	public final JobQueue completedJobs = new JobQueue();
+	public ServerList parentCollection;
 
 	public ComputeServer(ServerState svr) {
 		server = svr;
+	}
+
+	public ComputeServer(ServerState svr, ServerList parent) {
+			server = svr;
+			parentCollection = parent;
+		}
+
+	public void setServerList(ServerList parent) {
+		this.parentCollection = parent;
 	}
 }
 
@@ -1164,6 +1270,25 @@ class RoundRobinScheduler extends Scheduler {
 
 }
 
+/**
+ * This scheduler works at first by allocating jobs the smallest available server, once all
+ * available servers are exhaused it then begins queueing jobs on the a capable server that
+ * has the least queued jobs.
+ * 
+ * The next stage would be responding to job completions, looking for servers that have no more
+ * jobs waiting. We would then look at jobs queued on similar or smaller servers, and see if we can
+ * reallocate them onto the now free server.
+ * 
+ * 
+ * There could be efforts made to try agressively batch smaller jobs onto much larger servers.
+ * Could be done by:
+ * 	looking at total available compute on the free server.
+ * 	finding the servers with the most scheduled jobs/sorting servers with most scheduled jobs 
+ * 	(where server is same size or smaller than us, preferring smaller servers as we can probably
+ *  handle more of their jobs at once)
+ * 		iterating through those servers and finding how many jobs we can allocate to our free server
+ * 			then allocate those jobs.
+ */
 class Part2Scheduler extends Scheduler {
 
 	public void initialise(MyClient c) {
@@ -1171,7 +1296,43 @@ class Part2Scheduler extends Scheduler {
 		client.loadServerInfo();
 	}
 
+	private void printSystemGraph() {
+		this.client.C_GetServerState(EnumGETSState.All, null, null);
+		this.client.handleNextMessage(); 
+		ServerState[] data = client.getDataResponse();
+		client.response_data = null;
+
+		if (data == null || data.length == 0)
+			return;
+
+		System.out.print("\033[H\033[2J");
+		System.out.flush();
+
+		StringBuilder sb = new StringBuilder(4096);
+		for (ServerState serverState : data) {
+			String bars = "|";
+
+			sb.append(String.format(MyClient.ANSI_WHITE + "%-10s %-10s %-10s %-10s\n" + MyClient.ANSI_WHITE,
+					serverState.type,
+					serverState.id,
+					serverState.state,
+					MyClient.ANSI_GREEN + bars.repeat(serverState.runningJobs) +
+							MyClient.ANSI_RED + bars.repeat(serverState.waitingJobs)));
+		}
+
+		System.out.println(sb.toString());
+		System.out.flush();
+
+		// try {
+		// 	Thread.sleep(10);
+		// } catch (InterruptedException e) {
+		// 	e.printStackTrace();
+		// }
+	}
+
 	public void run() {
+		printSystemGraph();
+
 		// Get the most recent job, and if not null, we will queue it.
 		final Job dequeue = this.client.incomingJobs.dequeue();
 		if (dequeue != null) {
@@ -1180,6 +1341,22 @@ class Part2Scheduler extends Scheduler {
 			this.client.handleNextMessage(); // OK
 			ServerState[] data = client.getDataResponse();
 			if (data != null) {
+				ComputeServer target = null;
+				for (final ServerState ss : data) {
+					final var serverCache = client.getCachedServerInfo(ss);
+					if (target != null) {
+						if (target.jobs.size() <= serverCache.jobs.size())
+							continue;
+						else
+							target = serverCache;
+						
+						if (target.jobs.size() == 0)
+							break;
+					} else {
+						target = serverCache;
+					}
+
+				}
 				final ServerState serverState = data[0];
 				this.client.C_Schedule(dequeue, serverState.type, serverState.id);
 				// this.client.handleNextMessage(); // OK
@@ -1211,5 +1388,126 @@ class Part2Scheduler extends Scheduler {
 				}
 			}
 		}
+		
+		/*
+		 * The next stage would be responding to job completions, looking for servers that have no more
+		 * jobs waiting. We would then look at jobs queued on similar or smaller servers, and see if we can
+		 * reallocate them onto the now free server.
+		 */
+		var completed = client.getServerWithMostRecentJobCompletion();
+		if (completed != null && completed.jobs.size() == 0) {
+
+			this.client.C_GetServerState(EnumGETSState.All, null, null);
+			// this.client.handleNextMessage(); // OK
+			ServerState[] data = client.getDataResponse();
+			var serversToCheck = new ArrayList<ServerState>();
+			if (data != null) {
+				for (var s : data) {
+					if (s.waitingJobs > 1)
+						serversToCheck.add(s);
+				}
+			}
+			client.handleNextMessage();
+
+			
+			if (serversToCheck.size() > 0) {
+				// Sort servers with most waiting jobs first
+				serversToCheck.sort((a, b) -> {
+					if (a.waitingJobs > b.waitingJobs)
+						return -1;
+					else if (a.waitingJobs < b.waitingJobs)
+						return 1;
+					else
+						return 0;
+				});
+
+				int availCpu = completed.server.core;
+				int availMem = completed.server.memory;
+				int availDisk = completed.server.disk;
+
+				for (var s : serversToCheck) {
+
+					// The the sample server is smaller or the same size as the completed server we
+					// can look at its jobs as they will fit on the completed server.
+					if (s.core <= completed.server.core && s.memory <= completed.server.memory
+							&& s.disk <= completed.server.disk) {
+
+						client.C_ListJobs(s.type, s.id);
+						client.handleNextMessage(); //
+						JobStatus[] js = client.getDataResponse();
+						if (js != null && js.length > 0) {
+							for (var job : js) {
+								if (job.getState() == EnumJobState.Waiting) {
+									if (availCpu - job.cores >= 0 &&
+											availMem - job.memory >= 0 &&
+											availDisk - job.disk >= 0) {
+										client.C_MigrateJob(job.jobId, s.type, s.id, completed.server.type,
+												completed.server.id);
+										client.writeConsoleSysMsg(EnumSysLogLevel.Sys, "Job migrated ", s.id);
+										availCpu -= job.cores;
+										availMem -= job.memory;
+										availDisk -= job.disk;
+									}
+								}
+							}
+						}
+						// Clear data
+						client.response_data = null;
+					}
+				}
+			}
+
+
+			
+			/*
+			var rebalanceTargets = client.getSmallerServersOrderedByJobQueue(completed);
+			// If there are servers we can rebalance..
+			if (rebalanceTargets != null) {
+				var jobsToReschedule = new ArrayList<Pair<ComputeServer, Job>>();
+				int availCpu = completed.server.core;
+				int availMem = completed.server.memory;
+				int availDisk = completed.server.disk;
+			
+				for (var target : rebalanceTargets) {
+					// 3 jobs [0, 1, 2] size = 3 - 1 = 2
+					// dont touch [0] only want to poll twice
+					// for 0 to 1
+					//	poll()
+			
+					// 2 jobs [0, 1] size = 2 - 1 = 1
+					// For all but the active jobs on the target
+					for (int i = 0; i < target.jobs.size() - 1; i++) {
+						var j = target.jobs.pollLast();
+						if (availCpu - j.cores >= 0 && availMem - j.memory >= 0 && availDisk - j.disk >= 0) {
+							jobsToReschedule.add(new Pair<ComputeServer, Job>(target, j));
+							availCpu -= j.cores;
+							availMem -= j.memory;
+							availDisk -= j.disk;
+						}
+					}
+				}
+			
+				if (jobsToReschedule.size() > 0) {
+					// client.writeConsoleSysMsg(EnumSysLogLevel.Sys, "Rebalancing");
+					for (var p : jobsToReschedule) {
+						var job = p.second;
+						// id, srcSvrType, srcSvrId, destSvrType, destServerId
+						client.C_MigrateJob(job.jobId, p.first.server.type, p.first.server.id, completed.server.type, completed.server.id);
+					}
+				}
+			}
+			*/
+
+		}
+	}
+}
+
+class Pair<T, U> {
+	public T first;
+	public U second;
+
+	public Pair(T f, U s) {
+		first = f;
+		second = s;
 	}
 }
