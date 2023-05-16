@@ -1298,7 +1298,7 @@ class Part2Scheduler extends Scheduler {
 
 	private void printSystemGraph() {
 		this.client.C_GetServerState(EnumGETSState.All, null, null);
-		this.client.handleNextMessage(); 
+		this.client.handleNextMessage();
 		ServerState[] data = client.getDataResponse();
 		client.response_data = null;
 
@@ -1324,19 +1324,20 @@ class Part2Scheduler extends Scheduler {
 		System.out.flush();
 
 		// try {
-		// 	Thread.sleep(10);
+		// 	Thread.sleep(5);
 		// } catch (InterruptedException e) {
 		// 	e.printStackTrace();
 		// }
 	}
-
+	
 	public void run() {
 		printSystemGraph();
 
 		// Get the most recent job, and if not null, we will queue it.
 		final Job dequeue = this.client.incomingJobs.dequeue();
 		if (dequeue != null) {
-			// Find all available servers that can handle the job and schedule it on the first.
+			// Find all available servers that can handle the job and schedule it on the
+			// first.
 			this.client.C_GetServerState(EnumGETSState.Available, (String) null, (Applicance) dequeue);
 			this.client.handleNextMessage(); // OK
 			ServerState[] data = client.getDataResponse();
@@ -1349,7 +1350,7 @@ class Part2Scheduler extends Scheduler {
 							continue;
 						else
 							target = serverCache;
-						
+
 						if (target.jobs.size() == 0)
 							break;
 					} else {
@@ -1362,8 +1363,9 @@ class Part2Scheduler extends Scheduler {
 				// this.client.handleNextMessage(); // OK
 				this.client.response_data = null; // Clear response data.
 			}
-			// If there are not available servers, then look for all capable servers, and schedule it on 
-			// the one with the lease queued jobs 
+			// If there are not available servers, then look for all capable servers, and
+			// schedule it on
+			// the one with the lease queued jobs
 			else {
 				this.client.C_GetServerState(EnumGETSState.Capable, (String) null, (Applicance) dequeue);
 				this.client.handleNextMessage(); // OK
@@ -1388,116 +1390,91 @@ class Part2Scheduler extends Scheduler {
 				}
 			}
 		}
-		
+
+		boolean doRebalance = true;
 		/*
-		 * The next stage would be responding to job completions, looking for servers that have no more
-		 * jobs waiting. We would then look at jobs queued on similar or smaller servers, and see if we can
+		 * The next stage would be responding to job completions, looking for servers
+		 * that have no more
+		 * jobs waiting. We would then look at jobs queued on similar or smaller
+		 * servers, and see if we can
 		 * reallocate them onto the now free server.
 		 */
 		var completed = client.getServerWithMostRecentJobCompletion();
-		if (completed != null && completed.jobs.size() == 0) {
 
-			this.client.C_GetServerState(EnumGETSState.All, null, null);
-			// this.client.handleNextMessage(); // OK
-			ServerState[] data = client.getDataResponse();
-			var serversToCheck = new ArrayList<ServerState>();
-			if (data != null) {
-				for (var s : data) {
-					if (s.waitingJobs > 1)
-						serversToCheck.add(s);
+		if (doRebalance && completed != null) {
+			client.C_ListJobs(completed.server.type, completed.server.id);
+			client.handleNextMessage(); //
+			JobStatus[] svrJobs = client.getDataResponse();
+			this.client.response_data = null;
+
+			int availCpu = completed.server.core;
+			int availMem = completed.server.memory;
+			int availDisk = completed.server.disk;
+
+			if (svrJobs != null) {
+				for (JobStatus jobStatus : svrJobs) {
+					if (jobStatus.getState() == EnumJobState.Running) {
+						availCpu -= jobStatus.cores;
+						availMem -= jobStatus.memory;
+						availDisk -= jobStatus.disk;
+					}
+
 				}
-			}
-			client.handleNextMessage();
 
-			
-			if (serversToCheck.size() > 0) {
-				// Sort servers with most waiting jobs first
-				serversToCheck.sort((a, b) -> {
-					if (a.waitingJobs > b.waitingJobs)
-						return -1;
-					else if (a.waitingJobs < b.waitingJobs)
-						return 1;
-					else
-						return 0;
-				});
+				this.client.C_GetServerState(EnumGETSState.All, null, null);
+				// this.client.handleNextMessage(); // OK
+				ServerState[] data = client.getDataResponse();
+				var serversToCheck = new ArrayList<ServerState>();
+				if (data != null) {
+					for (var s : data) {
+						if (s.waitingJobs > 0 && s.type != completed.server.type && s.id != completed.server.id)
+							serversToCheck.add(s);
+					}
+				}
+				client.handleNextMessage();
 
-				int availCpu = completed.server.core;
-				int availMem = completed.server.memory;
-				int availDisk = completed.server.disk;
+				if (serversToCheck.size() > 0) {
+					// Sort servers with most waiting jobs first
+					serversToCheck.sort((a, b) -> {
+						if (a.waitingJobs > b.waitingJobs)
+							return -1;
+						else if (a.waitingJobs < b.waitingJobs)
+							return 1;
+						else
+							return 0;
+					});
 
-				for (var s : serversToCheck) {
+					for (var s : serversToCheck) {
 
-					// The the sample server is smaller or the same size as the completed server we
-					// can look at its jobs as they will fit on the completed server.
-					if (s.core <= completed.server.core && s.memory <= completed.server.memory
-							&& s.disk <= completed.server.disk) {
+						// The the sample server is smaller or the same size as the completed server we
+						// can look at its jobs as they will fit on the completed server.
+						if (s.core <= completed.server.core && s.memory <= completed.server.memory
+								&& s.disk <= completed.server.disk) {
 
-						client.C_ListJobs(s.type, s.id);
-						client.handleNextMessage(); //
-						JobStatus[] js = client.getDataResponse();
-						if (js != null && js.length > 0) {
-							for (var job : js) {
-								if (job.getState() == EnumJobState.Waiting) {
-									if (availCpu - job.cores >= 0 &&
-											availMem - job.memory >= 0 &&
-											availDisk - job.disk >= 0) {
-										client.C_MigrateJob(job.jobId, s.type, s.id, completed.server.type,
-												completed.server.id);
-										client.writeConsoleSysMsg(EnumSysLogLevel.Sys, "Job migrated ", s.id);
-										availCpu -= job.cores;
-										availMem -= job.memory;
-										availDisk -= job.disk;
+							client.C_ListJobs(s.type, s.id);
+							client.handleNextMessage(); //
+							JobStatus[] js = client.getDataResponse();
+							if (js != null && js.length > 0) {
+								for (var job : js) {
+									if (job.getState() == EnumJobState.Waiting) {
+										if (availCpu - job.cores >= 0 &&
+												availMem - job.memory >= 0 &&
+												availDisk - job.disk >= 0) {
+											client.C_MigrateJob(job.jobId, s.type, s.id, completed.server.type,
+													completed.server.id);
+											availCpu -= job.cores;
+											availMem -= job.memory;
+											availDisk -= job.disk;
+										}
 									}
 								}
 							}
-						}
-						// Clear data
-						client.response_data = null;
-					}
-				}
-			}
-
-
-			
-			/*
-			var rebalanceTargets = client.getSmallerServersOrderedByJobQueue(completed);
-			// If there are servers we can rebalance..
-			if (rebalanceTargets != null) {
-				var jobsToReschedule = new ArrayList<Pair<ComputeServer, Job>>();
-				int availCpu = completed.server.core;
-				int availMem = completed.server.memory;
-				int availDisk = completed.server.disk;
-			
-				for (var target : rebalanceTargets) {
-					// 3 jobs [0, 1, 2] size = 3 - 1 = 2
-					// dont touch [0] only want to poll twice
-					// for 0 to 1
-					//	poll()
-			
-					// 2 jobs [0, 1] size = 2 - 1 = 1
-					// For all but the active jobs on the target
-					for (int i = 0; i < target.jobs.size() - 1; i++) {
-						var j = target.jobs.pollLast();
-						if (availCpu - j.cores >= 0 && availMem - j.memory >= 0 && availDisk - j.disk >= 0) {
-							jobsToReschedule.add(new Pair<ComputeServer, Job>(target, j));
-							availCpu -= j.cores;
-							availMem -= j.memory;
-							availDisk -= j.disk;
+							// Clear data
+							client.response_data = null;
 						}
 					}
 				}
-			
-				if (jobsToReschedule.size() > 0) {
-					// client.writeConsoleSysMsg(EnumSysLogLevel.Sys, "Rebalancing");
-					for (var p : jobsToReschedule) {
-						var job = p.second;
-						// id, srcSvrType, srcSvrId, destSvrType, destServerId
-						client.C_MigrateJob(job.jobId, p.first.server.type, p.first.server.id, completed.server.type, completed.server.id);
-					}
-				}
 			}
-			*/
-
 		}
 	}
 }
