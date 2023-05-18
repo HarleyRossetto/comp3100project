@@ -3,8 +3,6 @@ import java.net.*;
 import java.lang.reflect.*;
 import java.util.*;
 
-import javax.naming.NameClassPair;
-
 import java.lang.annotation.*;
 
 public class MyClient {
@@ -1296,6 +1294,17 @@ class Part2Scheduler extends Scheduler {
 		client.loadServerInfo();
 	}
 
+	BufferedWriter log = new BufferedWriter(new OutputStreamWriter(System.out));
+	final int bufferSize = 4096;
+	char[] buffer = new char[bufferSize];
+	StringBuilder sb = new StringBuilder(bufferSize);
+
+	long total = 0;
+	long iterations = 1;
+	long avgWindow = 100;
+	long min = Long.MAX_VALUE;
+	long max = 0;
+
 	private void printSystemGraph() {
 		this.client.C_GetServerState(EnumGETSState.All, null, null);
 		this.client.handleNextMessage();
@@ -1305,76 +1314,90 @@ class Part2Scheduler extends Scheduler {
 		if (data == null || data.length == 0)
 			return;
 
-		System.out.print("\033[H\033[2J");
-		System.out.flush();
-
-		StringBuilder sb = new StringBuilder(4096);
+		sb.delete(0, sb.length()); // Clear buffer
+		sb.append("\033[H\033[2J").append(String.format("Output AVG:%6sus MIN:%6sus MAX:%6sus\n", total / 1000, min / 1000, max / 1000));
 		for (ServerState serverState : data) {
-			String bars = "|";
+			var cache = this.client.getCachedServerInfo(serverState);
 
-			sb.append(String.format(MyClient.ANSI_WHITE + "%-10s %-10s %-10s %-10s\n" + MyClient.ANSI_WHITE,
+			String bars = "|";
+			
+			sb.append(String.format(
+					MyClient.ANSI_WHITE + "%-10s %-10s %-10s %10s %-10s\n" + MyClient.ANSI_WHITE,
 					serverState.type,
 					serverState.id,
 					serverState.state,
+					MyClient.ANSI_GREEN + cache.completedJobs.size(),
 					MyClient.ANSI_GREEN + bars.repeat(serverState.runningJobs) +
 							MyClient.ANSI_RED + bars.repeat(serverState.waitingJobs)));
 		}
+		var start = System.nanoTime();
+	
+		// Copy output to buffer.
+		// Write buffer to output
+		try {
+			if (sb.length() > buffer.length)
+				buffer = new char[sb.length()];
+			sb.getChars(0, sb.length(), buffer, 0);
+			log.write(buffer, 0, sb.length());
+			log.flush();
+		} catch (Exception ex) {
+			// Ignore dont care
+		}
 
-		System.out.println(sb.toString());
-		System.out.flush();
-
-		// try {
-		// 	Thread.sleep(5);
-		// } catch (InterruptedException e) {
-		// 	e.printStackTrace();
-		// }
+		final var time = System.nanoTime() - start; 
+		// Rolling average
+		total -= total / avgWindow;
+		total += time / avgWindow;
+		if (time < min)
+			min = time;
+		else if (time > max)
+			max = time;
 	}
 	
 	public void run() {
-		printSystemGraph();
-
 		// Get the most recent job, and if not null, we will queue it.
 		final Job dequeue = this.client.incomingJobs.dequeue();
 		if (dequeue != null) {
-			// Find all available servers that can handle the job and schedule it on the
-			// first.
-			this.client.C_GetServerState(EnumGETSState.Available, (String) null, (Applicance) dequeue);
+			// Find all available servers that can handle the job and schedule it on the one 
+			// with the fewest waiting jobs
+			this.client.C_GetServerState(EnumGETSState.Available, null, dequeue);
 			this.client.handleNextMessage(); // OK
 			ServerState[] data = client.getDataResponse();
 			if (data != null) {
-				ComputeServer target = null;
+				// Finding server with least running jobs
+				ServerState sTarget = null;
 				for (final ServerState ss : data) {
-					final var serverCache = client.getCachedServerInfo(ss);
-					if (target != null) {
-						if (target.jobs.size() <= serverCache.jobs.size())
-							continue;
-						else
-							target = serverCache;
 
-						if (target.jobs.size() == 0)
-							break;
+					if (sTarget != null) {
+						if (ss.runningJobs < sTarget.runningJobs)
+							sTarget = ss;
+						
 					} else {
-						target = serverCache;
+						sTarget = ss;
 					}
-
 				}
-				final ServerState serverState = data[0];
-				this.client.C_Schedule(dequeue, serverState.type, serverState.id);
-				// this.client.handleNextMessage(); // OK
+				this.client.C_Schedule(dequeue, sTarget.type, sTarget.id);
 				this.client.response_data = null; // Clear response data.
 			}
 			// If there are not available servers, then look for all capable servers, and
-			// schedule it on
-			// the one with the lease queued jobs
+			// schedule it on the one with the lease queued jobs
 			else {
 				this.client.C_GetServerState(EnumGETSState.Capable, (String) null, (Applicance) dequeue);
 				this.client.handleNextMessage(); // OK
 				data = client.getDataResponse();
 				if (data != null) {
 					ComputeServer computeServer = null;
+					ServerState ss = null;
 					// For each of the capable servers, look up in our local cache for the one with
 					// smallest job queue.
 					for (final ServerState serverState2 : data) {
+						if (ss != null) {
+							if (serverState2.waitingJobs <= ss.waitingJobs) // Swap with server with least waiting jobs
+								ss = serverState2;
+						} else {
+							ss = serverState2; // Default initial
+						}
+						/*
 						final var serverCache = client.getCachedServerInfo(serverState2);
 						if (computeServer != null) {
 							if (computeServer.jobs.size() <= serverCache.jobs.size())
@@ -1383,9 +1406,10 @@ class Part2Scheduler extends Scheduler {
 						} else {
 							computeServer = serverCache;
 						}
+						*/
 					}
 					// Assign
-					this.client.C_Schedule(dequeue, computeServer.server.type, computeServer.server.id);
+					this.client.C_Schedule(dequeue, ss.type, ss.id);
 					this.client.response_data = null; // Clear response data
 				}
 			}
@@ -1403,7 +1427,7 @@ class Part2Scheduler extends Scheduler {
 
 		if (doRebalance && completed != null) {
 			client.C_ListJobs(completed.server.type, completed.server.id);
-			client.handleNextMessage(); //
+			client.handleNextMessage();
 			JobStatus[] svrJobs = client.getDataResponse();
 			this.client.response_data = null;
 
@@ -1417,18 +1441,20 @@ class Part2Scheduler extends Scheduler {
 						availCpu -= jobStatus.cores;
 						availMem -= jobStatus.memory;
 						availDisk -= jobStatus.disk;
+					} else if (jobStatus.getState() == EnumJobState.Waiting) {
+						return;
 					}
-
 				}
 
 				this.client.C_GetServerState(EnumGETSState.All, null, null);
-				// this.client.handleNextMessage(); // OK
 				ServerState[] data = client.getDataResponse();
 				var serversToCheck = new ArrayList<ServerState>();
 				if (data != null) {
 					for (var s : data) {
-						if (s.waitingJobs > 0 && s.type != completed.server.type && s.id != completed.server.id)
-							serversToCheck.add(s);
+						// Make sure we are not including the target server
+							if (s.waitingJobs > 0) {
+								serversToCheck.add(s);
+							}
 					}
 				}
 				client.handleNextMessage();
@@ -1476,6 +1502,8 @@ class Part2Scheduler extends Scheduler {
 				}
 			}
 		}
+		
+		// printSystemGraph();
 	}
 }
 
