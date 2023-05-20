@@ -1,5 +1,6 @@
 import java.io.*;
 import java.net.*;
+import java.time.temporal.TemporalQuery;
 import java.lang.reflect.*;
 import java.util.*;
 
@@ -1375,7 +1376,7 @@ class Part2Scheduler extends Scheduler {
 			ServerState[] data = client.getDataResponse();
 
 			if (data == null) {
-				this.client.C_GetServerState(EnumGETSState.Capable, (String) null, (Applicance) dequeue);
+				this.client.C_GetServerState(EnumGETSState.Capable, null, dequeue);
 				this.client.handleNextMessage(); // OK
 				data = client.getDataResponse();
 			}
@@ -1388,19 +1389,22 @@ class Part2Scheduler extends Scheduler {
 					// to wake them all up, and to hopefully reduce some waiting time for later jobs
 					// Ideally the job is a small one so we can hit all compute nodes.
 					// This 'optimisation' can improve turnaround time by ~13 points.
-					if (firstRun) {
-						// If not scheduled yet, do it on first server
-						if (!firstScheduled) {
-							this.client.C_Schedule(dequeue, ss.type, ss.id);
-							firstScheduled = true;
-						} else { // otherwise migrate from previous to next server.
-							this.client.C_MigrateJob(dequeue.jobId, previousStartSvr.type, previousStartSvr.id, ss.type,
-									ss.id);
-						}
-						previousStartSvr = ss;
-					}
+					// if (firstRun) {
+					// // If not scheduled yet, do it on first server
+					// if (!firstScheduled) {
+					// this.client.C_Schedule(dequeue, ss.type, ss.id);
+					// firstScheduled = true;
+					// } else { // otherwise migrate from previous to next server.
+					// this.client.C_MigrateJob(dequeue.jobId, previousStartSvr.type,
+					// previousStartSvr.id, ss.type,
+					// ss.id);
+					// }
+					// previousStartSvr = ss;
+					// }
 					if (sTarget != null) {
-						if (ss.runningJobs + ss.waitingJobs < sTarget.runningJobs + sTarget.waitingJobs)
+						// if (ss.runningJobs + ss.waitingJobs < sTarget.runningJobs +
+						// sTarget.waitingJobs)
+						if (ss.waitingJobs < sTarget.waitingJobs)
 							sTarget = ss;
 
 					} else {
@@ -1440,12 +1444,34 @@ class Part2Scheduler extends Scheduler {
 			int availDisk = completed.server.disk;
 
 			if (svrJobs != null) {
-				// Account for resources being used by current jobs
+				for (var js : svrJobs) {
+					if (js.getState() == EnumJobState.Waiting)
+						return;
+				}
+			}
+
+			// Get all server info
+			this.client.C_GetServerState(EnumGETSState.All, null, null);
+			ServerState[] data = client.getDataResponse();
+			var serversToCheck = new ArrayList<ServerState>();
+
+			// Look for any servers who do not have waiting jobs and keep track of them
+			if (data != null) {
+				for (var s : data) {
+					if (s.waitingJobs > 0) {
+						serversToCheck.add(s);
+					}
+				}
+			}
+			client.handleNextMessage(); // Probably .
+
+			// Account for resources being used by current jobs
+			if (svrJobs != null) {
 				for (JobStatus jobStatus : svrJobs) {
 					switch (jobStatus.getState()) {
 						// If we have any waiting jobs then we wont worry about balancing load.
-						case Waiting:
-							return;
+						// case Waiting:
+						// return;
 						case Running:
 							availCpu -= jobStatus.cores;
 							availMem -= jobStatus.memory;
@@ -1455,66 +1481,50 @@ class Part2Scheduler extends Scheduler {
 							break;
 					}
 				}
+			}
 
-				// Get all server info
-				this.client.C_GetServerState(EnumGETSState.All, null, null);
-				ServerState[] data = client.getDataResponse();
-				var serversToCheck = new ArrayList<ServerState>();
+			if (serversToCheck.size() > 0) {
+				// Sort servers with most waiting jobs first
+				serversToCheck.sort((a, b) -> {
+					if (a.waitingJobs > b.waitingJobs)
+						return -1;
+					else if (a.waitingJobs < b.waitingJobs)
+						return 1;
+					else
+						return 0;
+				});
 
-				// Look for any servers who do not have waiting jobs and keep track of them
-				if (data != null) {
-					for (var s : data) {
-						// Make sure we are not including the target server
-						if (s.waitingJobs > 0) {
-							serversToCheck.add(s);
-						}
-					}
-				}
-				client.handleNextMessage(); // Probably .
+				for (var s : serversToCheck) {
 
-				if (serversToCheck.size() > 0) {
-					// Sort servers with most waiting jobs first
-					serversToCheck.sort((a, b) -> {
-						if (a.waitingJobs > b.waitingJobs)
-							return -1;
-						else if (a.waitingJobs < b.waitingJobs)
-							return 1;
-						else
-							return 0;
-					});
+					// The the sample server is smaller or the same size as the completed server we
+					// can look at its jobs as they will fit on the completed server.
+					if (s.core <= completed.server.core && s.memory <= completed.server.memory
+							&& s.disk <= completed.server.disk) {
 
-					for (var s : serversToCheck) {
+						client.C_ListJobs(s.type, s.id); // Get all jobs currently on the target server
+						client.handleNextMessage(); //
+						JobStatus[] js = client.getDataResponse();
+						if (js != null && js.length > 0) {
+							for (var job : js) {
+								// If the job is waiting, and we have the resources to run it then
+								// migrate the job, and account for reduction in resources.
+								if (job.getState() == EnumJobState.Waiting) {
+									if (availCpu - job.cores >= 0 &&
+											availMem - job.memory >= 0 &&
+											availDisk - job.disk >= 0) {
 
-						// The the sample server is smaller or the same size as the completed server we
-						// can look at its jobs as they will fit on the completed server.
-						if (s.core <= completed.server.core && s.memory <= completed.server.memory
-								&& s.disk <= completed.server.disk) {
+										client.C_MigrateJob(job.jobId, s.type, s.id, completed.server.type,
+												completed.server.id);
 
-							client.C_ListJobs(s.type, s.id); // Get all jobs currently on the target server
-							client.handleNextMessage(); //
-							JobStatus[] js = client.getDataResponse();
-							if (js != null && js.length > 0) {
-								for (var job : js) {
-									// If the job is waiting, and we have the resources to run it then
-									// migrate the job, and account for reduction in resources.
-									if (job.getState() == EnumJobState.Waiting) {
-										if (availCpu - job.cores >= 0 &&
-												availMem - job.memory >= 0 &&
-												availDisk - job.disk >= 0) {
-
-											client.C_MigrateJob(job.jobId, s.type, s.id, completed.server.type,
-													completed.server.id);
-
-											availCpu -= job.cores;
-											availMem -= job.memory;
-											availDisk -= job.disk;
-										}
+										availCpu -= job.cores;
+										availMem -= job.memory;
+										availDisk -= job.disk;
 									}
 								}
 							}
-							// Clear data
-							client.response_data = null;
 						}
+						// Clear data
+						client.response_data = null;
 					}
 				}
 			}
