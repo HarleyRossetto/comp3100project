@@ -1373,6 +1373,13 @@ class Part2Scheduler extends Scheduler {
 			this.client.C_GetServerState(EnumGETSState.Available, null, dequeue);
 			this.client.handleNextMessage(); // OK
 			ServerState[] data = client.getDataResponse();
+
+			if (data == null) {
+				this.client.C_GetServerState(EnumGETSState.Capable, (String) null, (Applicance) dequeue);
+				this.client.handleNextMessage(); // OK
+				data = client.getDataResponse();
+			}
+
 			if (data != null) {
 				// Finding server with least running jobs
 				ServerState sTarget = null;
@@ -1388,7 +1395,7 @@ class Part2Scheduler extends Scheduler {
 							firstScheduled = true;
 						} else { // otherwise migrate from previous to next server.
 							this.client.C_MigrateJob(dequeue.jobId, previousStartSvr.type, previousStartSvr.id, ss.type,
-							ss.id);
+									ss.id);
 						}
 						previousStartSvr = ss;
 					}
@@ -1407,30 +1414,7 @@ class Part2Scheduler extends Scheduler {
 				this.client.C_Schedule(dequeue, sTarget.type, sTarget.id);
 				this.client.response_data = null; // Clear response data.
 			}
-			// If there are not available servers, then look for all capable servers, and
-			// schedule it on the one with the lease queued jobs
-			else {
-				this.client.C_GetServerState(EnumGETSState.Capable, (String) null, (Applicance) dequeue);
-				this.client.handleNextMessage(); // OK
-				data = client.getDataResponse();
-				if (data != null) {
-					ServerState ss = null;
-					// For each of the capable servers, look up in our local cache for the one with
-					// smallest job queue.
-					for (final ServerState serverState2 : data) {
-						if (ss != null) {
-							// Swap with server with least jobs
-							if (serverState2.waitingJobs + serverState2.runningJobs <= ss.waitingJobs + ss.runningJobs) 
-								ss = serverState2;
-						} else {
-							ss = serverState2; // Default initial
-						}
-					}
-					// Assign
-					this.client.C_Schedule(dequeue, ss.type, ss.id);
-					this.client.response_data = null; // Clear response data
-				}
-			}
+
 		}
 
 		boolean doRebalance = true;
@@ -1506,8 +1490,7 @@ class Part2Scheduler extends Scheduler {
 						if (s.core <= completed.server.core && s.memory <= completed.server.memory
 								&& s.disk <= completed.server.disk) {
 
-							// Get all jobs currently on the target server
-							client.C_ListJobs(s.type, s.id);
+							client.C_ListJobs(s.type, s.id); // Get all jobs currently on the target server
 							client.handleNextMessage(); //
 							JobStatus[] js = client.getDataResponse();
 							if (js != null && js.length > 0) {
