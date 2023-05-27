@@ -1389,18 +1389,18 @@ class Part2Scheduler extends Scheduler {
 					// to wake them all up, and to hopefully reduce some waiting time for later jobs
 					// Ideally the job is a small one so we can hit all compute nodes.
 					// This 'optimisation' can improve turnaround time by ~13 points.
-					// if (firstRun) {
-					// // If not scheduled yet, do it on first server
-					// if (!firstScheduled) {
-					// this.client.C_Schedule(dequeue, ss.type, ss.id);
-					// firstScheduled = true;
-					// } else { // otherwise migrate from previous to next server.
-					// this.client.C_MigrateJob(dequeue.jobId, previousStartSvr.type,
-					// previousStartSvr.id, ss.type,
-					// ss.id);
-					// }
-					// previousStartSvr = ss;
-					// }
+					if (firstRun) {
+						// If not scheduled yet, do it on first server
+						if (!firstScheduled) {
+							this.client.C_Schedule(dequeue, ss.type, ss.id);
+							firstScheduled = true;
+						} else { // otherwise migrate from previous to next server.
+							this.client.C_MigrateJob(dequeue.jobId, previousStartSvr.type,
+									previousStartSvr.id, ss.type,
+									ss.id);
+						}
+						previousStartSvr = ss;
+					}
 					if (sTarget != null) {
 						// if (ss.runningJobs + ss.waitingJobs < sTarget.runningJobs +
 						// sTarget.waitingJobs)
