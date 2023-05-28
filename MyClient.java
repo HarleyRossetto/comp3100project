@@ -11,15 +11,15 @@ public class MyClient {
 		new MyClient();
 	}
 
-	public static final String ANSI_RESET 	= "\u001B[0m";
-	public static final String ANSI_BLACK 	= "\u001B[30m";
-	public static final String ANSI_RED 	= "\u001B[31m";
-	public static final String ANSI_GREEN 	= "\u001B[32m";
-	public static final String ANSI_YELLOW 	= "\u001B[33m";
-	public static final String ANSI_BLUE 	= "\u001B[34m";
-	public static final String ANSI_PURPLE 	= "\u001B[35m";
-	public static final String ANSI_CYAN 	= "\u001B[36m";
-	public static final String ANSI_WHITE 	= "\u001B[37m";
+	public static final String ANSI_RESET = "\u001B[0m";
+	public static final String ANSI_BLACK = "\u001B[30m";
+	public static final String ANSI_RED = "\u001B[31m";
+	public static final String ANSI_GREEN = "\u001B[32m";
+	public static final String ANSI_YELLOW = "\u001B[33m";
+	public static final String ANSI_BLUE = "\u001B[34m";
+	public static final String ANSI_PURPLE = "\u001B[35m";
+	public static final String ANSI_CYAN = "\u001B[36m";
+	public static final String ANSI_WHITE = "\u001B[37m";
 
 	private EnumSysLogLevel sysMessageLogLevel = EnumSysLogLevel.Sys;
 
@@ -594,12 +594,12 @@ public class MyClient {
 	public void S_JOBN(int submitTime, int jobId, int estRuntime, int core, int memory, int disk) {
 		// Setup job object
 		var j = new Job();
-		j.submitTime 	= submitTime;
-		j.jobId 		= jobId;
-		j.estRunTime 	= estRuntime;
-		j.cores 		= core;
-		j.memory 		= memory;
-		j.disk 			= disk;
+		j.submitTime = submitTime;
+		j.jobId = jobId;
+		j.estRunTime = estRuntime;
+		j.cores = core;
+		j.memory = memory;
+		j.disk = disk;
 		j.state = EnumJobState.Waiting;
 
 		incomingJobs.enqueue(j);
@@ -614,6 +614,8 @@ public class MyClient {
 
 		j.state = EnumJobState.Completed;
 		j.endTime = endTime;
+
+		System.out.println("Job " + j.jobId + " ERT: " + j.estRunTime + " RT: " + (j.endTime - j.submitTime));
 
 		svr.completedJobs.enqueue(j);
 
@@ -827,7 +829,7 @@ public class MyClient {
 			for (var svr : list.servers) {
 				if (list.order < cs.parentCollection.order && svr.jobs.size() > 1)
 					results.add(svr);
-				}
+			}
 		}
 		if (results.size() > 0) {
 			results.sort(
@@ -959,7 +961,7 @@ class Job extends Applicance {
 	public int jobId;
 	public int queueId;
 	public int submitTime;
-	public int queuedTime;
+	public int startTime;
 	public int estRunTime;
 
 	public EnumJobState state;
@@ -974,7 +976,7 @@ class JobStatus extends Applicance {
 	public int jobId;
 	public int state;
 	public int submitTime;
-	public int queuedTime;
+	public int startTime;
 	public int estRunTime;
 
 	public JobStatus() {
@@ -1375,20 +1377,17 @@ class Part2Scheduler extends Scheduler {
 			this.client.handleNextMessage(); // OK
 			ServerState[] data = client.getDataResponse();
 
-			if (data == null) {
-				this.client.C_GetServerState(EnumGETSState.Capable, null, dequeue);
-				this.client.handleNextMessage(); // OK
-				data = client.getDataResponse();
-			}
-
 			if (data != null) {
 				// Finding server with least running jobs
 				ServerState sTarget = null;
 				for (final ServerState ss : data) {
 					// If this is the first job then we are going to smash it through each server
 					// to wake them all up, and to hopefully reduce some waiting time for later jobs
-					// Ideally the job is a small one so we can hit all compute nodes.
-					// This 'optimisation' can improve turnaround time by ~13 points.
+					// In theory this doesn't work because the simulator hasn't 'stepped' or
+					// progressed
+					// between migrations, however this code does leave turnaround time 1 point
+					// better off
+					// so its gonna stay. :)
 					if (firstRun) {
 						// If not scheduled yet, do it on first server
 						if (!firstScheduled) {
@@ -1410,6 +1409,12 @@ class Part2Scheduler extends Scheduler {
 					} else {
 						sTarget = ss;
 					}
+
+					// try {
+					// printSystemGraph();
+					// System.in.read();
+					// } catch (IOException e) {
+					// }
 				}
 
 				if (firstRun) {
@@ -1417,9 +1422,106 @@ class Part2Scheduler extends Scheduler {
 				}
 				this.client.C_Schedule(dequeue, sTarget.type, sTarget.id);
 				this.client.response_data = null; // Clear response data.
+
+			} else {
+				this.client.C_GetServerState(EnumGETSState.Capable, null, dequeue);
+				this.client.handleNextMessage(); // OK
+				data = client.getDataResponse();
+
+				if (data != null) {
+					// Collect all servers that have not waiting jobs
+					var serversWithNoWaiting = new ArrayList<ServerState>();
+					for (var s : data) {
+						if (s.waitingJobs == 0)
+							serversWithNoWaiting.add(s);
+					}
+
+					ServerState sTarget = null;
+					int bestAvailableTime = Integer.MAX_VALUE;
+					
+					for (final var ss : serversWithNoWaiting) {
+						this.client.C_ListJobs(ss.type, ss.id);
+						client.handleNextMessage(); // Probably .
+						JobStatus[] jobs = this.client.getDataResponse();
+
+						var localCache = this.client.getCachedServerInfo(ss);
+						for (var j : jobs) {
+							for (var lj : localCache.jobs) {
+								if (lj.jobId == j.jobId) {
+									lj.startTime = j.startTime;
+								}
+							}
+						}
+						/*
+						 * SERVER
+						 * curStartTime = time server started working
+						 * 
+						 * 
+						 * JOB
+						 * startTime = when job started running
+						 * submitTime = when job was submitted
+						 * estRunTim = how long job will take
+						 * 
+						 * 
+						 * 
+						 */
+						int serverFinishTime = 0;
+						if (jobs != null) {
+							// Only try if there is one job
+							if (jobs.length == 1) {
+								for (var j : jobs) {
+									// We can use submit time of new job as the current simulation time
+									final var currentSimTime = dequeue.submitTime;
+
+									// When the current active job might finish
+									var estFinishTime = j.startTime + j.estRunTime;
+
+									// How much time we have left to run the current job
+									var estTimeRemaining = estFinishTime - currentSimTime;
+
+									// Accumulate that value
+									serverFinishTime += estTimeRemaining;
+								}
+
+								// Keep track of server with soonest availability
+								if (serverFinishTime < bestAvailableTime) {
+									bestAvailableTime = serverFinishTime;
+									sTarget = ss;
+								}
+							} else {
+								if (sTarget == null) {
+									sTarget = ss;
+								} else {
+									if (ss.waitingJobs < sTarget.waitingJobs)
+										sTarget = ss;
+								}
+							}
+						}
+					}
+					if (sTarget == null) {
+						for (var ss : data) {
+							if (sTarget == null)
+								sTarget = ss;
+							else 
+								if (ss.runningJobs < sTarget.runningJobs)
+									sTarget = ss;
+						}
+					}
+					this.client.C_Schedule(dequeue, sTarget.type, sTarget.id);
+					this.client.response_data = null; // Clear response data.
+				}
 			}
 
 		}
+
+		/*
+		 * 
+		 * 
+		 * WHEN CAPABLE LOOK FOR SERVER WHICH IS ABOUT TO FINISH JOB AND HAS NO WAITING
+		 * JOBS. THIS IS BEST OPTION FOR QUEUEING
+		 * 
+		 * 
+		 */
 
 		boolean doRebalance = true;
 		/*
