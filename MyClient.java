@@ -1361,10 +1361,6 @@ class Part2Scheduler extends Scheduler {
 			max = time;
 	}
 
-	boolean firstRun = true;
-	boolean firstScheduled = false;
-	ServerState previousStartSvr = null;
-
 	public void run() {
 		// Get the most recent job, and if not null, we will queue it.
 		final Job dequeue = this.client.incomingJobs.dequeue();
@@ -1381,39 +1377,21 @@ class Part2Scheduler extends Scheduler {
 				data = client.getDataResponse();
 			}
 
+			// Treat both data sets the same.
 			if (data != null) {
 				// Finding server with least running jobs
 				ServerState sTarget = null;
 				for (final ServerState ss : data) {
-					// If this is the first job then we are going to smash it through each server
-					// to wake them all up, and to hopefully reduce some waiting time for later jobs
-					// Ideally the job is a small one so we can hit all compute nodes.
-					// This 'optimisation' can improve turnaround time by ~13 points.
-					if (firstRun) {
-						// If not scheduled yet, do it on first server
-						if (!firstScheduled) {
-							this.client.C_Schedule(dequeue, ss.type, ss.id);
-							firstScheduled = true;
-						} else { // otherwise migrate from previous to next server.
-							this.client.C_MigrateJob(dequeue.jobId, previousStartSvr.type,
-									previousStartSvr.id, ss.type,
-									ss.id);
-						}
-						previousStartSvr = ss;
-					}
 					if (sTarget != null) {
-						// if (ss.runningJobs + ss.waitingJobs < sTarget.runningJobs +
-						// sTarget.waitingJobs)
 						if (ss.waitingJobs < sTarget.waitingJobs)
 							sTarget = ss;
 
 					} else {
 						sTarget = ss;
 					}
-				}
 
-				if (firstRun) {
-					firstRun = !firstRun;
+					if (sTarget.waitingJobs == 0)
+						break;
 				}
 				this.client.C_Schedule(dequeue, sTarget.type, sTarget.id);
 				this.client.response_data = null; // Clear response data.
@@ -1443,6 +1421,8 @@ class Part2Scheduler extends Scheduler {
 			int availMem = completed.server.memory;
 			int availDisk = completed.server.disk;
 
+			// If the server has waiting jobs, then we will not migrate anything to it. 
+			// Stop here, do not pass good, do not collect $.
 			if (svrJobs != null) {
 				for (var js : svrJobs) {
 					if (js.getState() == EnumJobState.Waiting)
@@ -1452,10 +1432,11 @@ class Part2Scheduler extends Scheduler {
 
 			// Get all server info
 			this.client.C_GetServerState(EnumGETSState.All, null, null);
+			client.handleNextMessage(); // Probably .
 			ServerState[] data = client.getDataResponse();
 			var serversToCheck = new ArrayList<ServerState>();
 
-			// Look for any servers who do not have waiting jobs and keep track of them
+			// Look for any servers who have waiting jobs and keep track of them
 			if (data != null) {
 				for (var s : data) {
 					if (s.waitingJobs > 0) {
@@ -1463,7 +1444,6 @@ class Part2Scheduler extends Scheduler {
 					}
 				}
 			}
-			client.handleNextMessage(); // Probably .
 
 			// Account for resources being used by current jobs
 			if (svrJobs != null) {
